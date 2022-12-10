@@ -161,7 +161,11 @@ class TiDBCluster:
             if req == "":
                 log.error("cannot find regions,%s" % (req))
                 return table_regions_map
-            rep = request.urlopen(req)
+            try:
+                rep = request.urlopen(req)
+            except Exception as e:
+                log.error("url error %s,message:%s,tablename: %s may not exists!" % (e,req,dbname+"."+tabname))
+                continue
             if rep.getcode() != 200:
                 log.error("cannot find regions,%s" % (req))
                 continue
