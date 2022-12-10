@@ -1,10 +1,16 @@
 #!/usr/bin/python
 # encoding=utf8
-#必须开启如下配置文件参数否则计算可能不准（默认情况下即开启）
-#rocksdb.defaultcf.enable-compaction-guard=true
-#rocksdb.writecf.enable-compaction-guard=true
-#tidb.split-table=true
-import sys, subprocess, logging as log,argparse,json,threading
+# 必须开启如下配置文件参数否则计算可能不准（默认情况下即开启）
+# rocksdb.defaultcf.enable-compaction-guard=true
+# rocksdb.writecf.enable-compaction-guard=true
+# tidb.split-table=true
+import argparse
+import json
+import logging as log
+import subprocess
+import sys
+import threading
+
 if float(sys.version[:3]) <= 2.7:
     import urllib as request
 else:
@@ -14,13 +20,15 @@ from queue import Queue
 # python3
 property_queue = Queue(100)
 region_queue = Queue(100)
+
+
 def command_run(command, timeout=30):
     proc = subprocess.Popen(command, bufsize=409600, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-    #poll_seconds = .250
-    #deadline = time.time() + timeout
-    #while time.time() < deadline and proc.poll() is None:
+    # poll_seconds = .250
+    # deadline = time.time() + timeout
+    # while time.time() < deadline and proc.poll() is None:
     #    time.sleep(poll_seconds)
-    #if proc.poll() is None:
+    # if proc.poll() is None:
     #    if float(sys.version[:3]) >= 2.6:
     #        proc.terminate()
     stdout, stderr = proc.communicate()
@@ -28,7 +36,15 @@ def command_run(command, timeout=30):
         return str(stdout) + str(stderr), proc.returncode
     return str(stdout, 'UTF-8') + str(stderr, 'UTF-8'), proc.returncode
 
-
+def printSize(size):
+    if size<(1<<10):
+        return "%.2fB" % (size)
+    elif size<(1<<20):
+        return "%.2fKB" % (size/(1<<10))
+    elif size<(1<<30):
+        return "%.2fMB" % (size/(1<<20))
+    else:
+        return "%.2fGB" % (size/(1<<30))
 def check_env():
     result, recode = command_run("command -v tiup")
     if recode != 0:
@@ -65,6 +81,7 @@ class SSTFile:
         self.sst_name = ""
         self.sst_size = ""
         self.sst_node_id = ""
+
 
 class TiDBCluster:
     roles = ["alertmanager", "grafana", "pd", "prometheus", "tidb", "tiflash", "tikv"]
@@ -112,7 +129,7 @@ class TiDBCluster:
         if recode != 0:
             raise Exception("tikv-ctl check error,cmd:%s,message:%s" % (cmd, result))
 
-    def get_tablelist4db(self,dbname):
+    def get_tablelist4db(self, dbname):
         tabname_list = []
         for node in self.tidb_nodes:
             if node.role == "tidb":
@@ -158,34 +175,37 @@ class TiDBCluster:
                     if store.id == region.leader_store_id:
                         region.leader_store_node_id = store.address
                 regions.append(region)
-            table_regions_map[dbname+"."+tabname] = regions
+            table_regions_map[dbname + "." + tabname] = regions
         return table_regions_map
 
-    def get_phy_tables_size(self, dbname, tabname_list,parallel=1):
-        table_map = {} #打印每一张表的大小
+    def get_phy_tables_size(self, dbname, tabname_list, parallel=1):
+        table_map = {}  # 打印每一张表的大小
         sstfile_map = {}
         for sstfile in self.get_store_sstfiles_bystoreall():
             sstfile_map[sstfile.sst_node_id, sstfile.sst_name] = sstfile.sst_size
-        def get_regions(dbname,tabname_list):
-            for tabname,regions in self.get_regions4tables(dbname, tabname_list).items():
+
+        def get_regions(dbname, tabname_list):
+            for tabname, regions in self.get_regions4tables(dbname, tabname_list).items():
                 for region in regions:
                     log.debug("put region into region_queue:%s" % (region.region_id))
-                    region_queue.put((tabname,region.leader_store_node_id,region.region_id))
+                    region_queue.put((tabname, region.leader_store_node_id, region.region_id))
             for i in range(parallel):
-                #signal close region_queue
+                # signal close region_queue
                 log.debug("put region into region_queue:None")
                 region_queue.put(None)
-        region_thread = threading.Thread(target=get_regions,args=(dbname,tabname_list))
+
+        region_thread = threading.Thread(target=get_regions, args=(dbname, tabname_list))
         region_thread.start()
         threads = []
         for i in range(parallel):
-            t = threading.Thread(target=self.get_leader_region_sstfiles_muti,args=(region_queue,))
+            t = threading.Thread(target=self.get_leader_region_sstfiles_muti, args=(region_queue,))
             t.start()
             threads.append(t)
-        def get_size_from_property_queue(property_queue,table_map):
+
+        def get_size_from_property_queue(property_queue, table_map):
             log.debug("get_size_from_property_queue")
             none_cnt = 0
-            sstfile_map_filter = {} #当表中已经存在该sst后则不重复计算
+            sstfile_map_filter = {}  # 当表中已经存在该sst后则不重复计算
             while True:
                 data = property_queue.get()
                 if data is None:
@@ -194,10 +214,10 @@ class TiDBCluster:
                         return
                     else:
                         continue
-                (tabname,leader_store_node_id,sstfiles) = data
+                (tabname, leader_store_node_id, sstfiles) = data
                 for each_sstfile in sstfiles:
                     key = (leader_store_node_id, each_sstfile)
-                    key_map_filter = (tabname,leader_store_node_id, each_sstfile)
+                    key_map_filter = (tabname, leader_store_node_id, each_sstfile)
                     if key in sstfile_map:
                         if key_map_filter in sstfile_map_filter:
                             continue
@@ -209,9 +229,10 @@ class TiDBCluster:
                             table_map[tabname] = int(sstfile_map[key])
 
                 property_queue.task_done()
-        t1 = threading.Thread(target=get_size_from_property_queue,args=(property_queue,table_map))
+
+        t1 = threading.Thread(target=get_size_from_property_queue, args=(property_queue, table_map))
         t1.start()
-        for t in threads:t.join()
+        for t in threads: t.join()
         region_thread.join()
         t1.join()
         return table_map
@@ -272,9 +293,10 @@ class TiDBCluster:
                 log.debug("get_leader_region_sstfiles_muti:region_queue is None")
                 property_queue.put(None)
                 return
-            (tabname,leader_node_id,region_id) = data
+            (tabname, leader_node_id, region_id) = data
             sstfiles = []
-            cmd = "tiup ctl:%s tikv --host %s region-properties -r %d" % (self.cluster_version, leader_node_id, region_id)
+            cmd = "tiup ctl:%s tikv --host %s region-properties -r %d" % (
+            self.cluster_version, leader_node_id, region_id)
             result, recode = command_run(cmd)
             # cannot find region when region split or region merge
             if recode != 0:
@@ -286,19 +308,21 @@ class TiDBCluster:
                         each_line_fields_len = len(each_line_fields)
                         if each_line_fields_len == 2 and each_line_fields[1] != "":
                             sstfiles.extend([x.strip() for x in each_line_fields[1].split(",")])
-            property_queue.put((tabname,leader_node_id,sstfiles))
+            property_queue.put((tabname, leader_node_id, sstfiles))
             region_queue.task_done()
+
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description='get table size')
-    arg_parser.add_argument('-c','--cluster',type=str,help='tidb cluster name')
-    arg_parser.add_argument('-d','--dbname',type=str,help='database name')
-    arg_parser.add_argument('-t','--tabnamelist',type=str,help='table name,* mains all tables for database,muti table should like this "t1,t2,t3"')
-    arg_parser.add_argument('-p','--parallel',default=1,type=int,help='parallel')
-    arg_parser.add_argument('--loglevel',default="info",type=str,help='info,warn,debug')
+    arg_parser.add_argument('-c', '--cluster', type=str, help='tidb cluster name')
+    arg_parser.add_argument('-d', '--dbname', type=str, help='database name')
+    arg_parser.add_argument('-t', '--tabnamelist', type=str,
+                            help='table name,* mains all tables for database,muti table should like this "t1,t2,t3"')
+    arg_parser.add_argument('-p', '--parallel', default=1, type=int, help='parallel')
+    arg_parser.add_argument('--loglevel', default="info", type=str, help='info,warn,debug')
     args = arg_parser.parse_args()
     db_total_size = 0
-    cname,dbname,tabnamelist,parallel,loglevel,level = args.cluster,args.dbname,args.tabnamelist,args.parallel,args.loglevel,log.INFO
+    cname, dbname, tabnamelist, parallel, loglevel, level = args.cluster, args.dbname, args.tabnamelist, args.parallel, args.loglevel, log.INFO
     cluster = TiDBCluster(cname)
     if loglevel == "info":
         level = log.INFO
@@ -306,13 +330,13 @@ if __name__ == "__main__":
         level = log.WARN
     elif loglevel == "debug":
         level = log.DEBUG
-    log.basicConfig(level = level,format = '%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
+    log.basicConfig(level=level,
+                    format='%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
     tabname_list = [x.strip() for x in tabnamelist.split(",")]
     if len(tabname_list) == 1 and tabname_list[0] == "*":
         tabname_list = cluster.get_tablelist4db(dbname)
-    tables_map = cluster.get_phy_tables_size(dbname,tabname_list,parallel)
-    for tabname,size in tables_map.items():
+    tables_map = cluster.get_phy_tables_size(dbname, tabname_list, parallel)
+    for tabname, size in sorted(tables_map.items(),reverse=True,key=lambda x:x[1]):
         db_total_size += size
-        print("tabname:%-30s,tablesize:%-10d"% (tabname,size))
-    print("all_table_size:%d"% (db_total_size))
-
+        print("tabname:%-30s,tablesize:%-20d,format-tablesize:%20s" % (tabname, size,printSize(size)))
+    print("all_table_size:%-20d,format-all_table_size:%20s" % (db_total_size,printSize(db_total_size)))
