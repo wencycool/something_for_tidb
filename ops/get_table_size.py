@@ -1,5 +1,9 @@
 #!/usr/bin/python
 # encoding=utf8
+#必须开启如下配置文件参数否则计算可能不准（默认情况下即开启）
+#rocksdb.defaultcf.enable-compaction-guard=true
+#rocksdb.writecf.enable-compaction-guard=true
+#tidb.split-table=true
 import sys, subprocess, logging as log
 if float(sys.version[:3]) <= 2.7:
     import urllib as request
@@ -31,7 +35,6 @@ def check_env():
     result, recode = command_run("command -v tiup")
     if recode != 0:
         raise Exception("cannot find tiup:%s" % (result))
-    # todo 补充tiup ctl:<version> tikv的检测，但version需要再TiDBCluster实例中获取
     return True
 
 
@@ -143,6 +146,7 @@ class TiDBCluster:
         total_size = 0
         sst_file_list = []
         sstfile_map = {}
+        sstfile_map_filter = {} #当表中已经存在该sst后则不重复计算
         for sstfile in self.get_store_sstfiles_bystoreall():
             sstfile_map[sstfile.sst_node_id, sstfile.sst_name] = sstfile.sst_size
         if parallel == 1:
@@ -150,6 +154,10 @@ class TiDBCluster:
                 for each_sstfile in self.get_leader_region_sstfiles(region.leader_store_node_id, region.region_id):
                     key = (region.leader_store_node_id, each_sstfile)
                     if key in sstfile_map:
+                        if key in sstfile_map_filter:
+                            continue
+                        else:
+                            sstfile_map_filter[key] = None
                         total_size += int(sstfile_map[key])
                         sst_file_list.append(key)
         elif parallel > 1:
@@ -185,6 +193,10 @@ class TiDBCluster:
                     for each_sstfile in sstfiles:
                         key = (leader_store_node_id, each_sstfile)
                         if key in sstfile_map:
+                            if key in sstfile_map_filter:
+                                continue
+                            else:
+                                sstfile_map_filter[key] = None
                             total_size_list[0] += int(sstfile_map[key])
                             sst_file_list.append(key)
                     property_queue.task_done()
