@@ -1,16 +1,17 @@
 #!/usr/bin/python
 # encoding=utf8
-import os
-import sys, subprocess, time, logging as log
+import sys, subprocess, logging as log
 if float(sys.version[:3]) <= 2.7:
     import urllib as request
 else:
     import urllib.request as request
 import json
 import argparse
-
+import threading
+from queue import Queue
 # python3
-
+property_queue = Queue(20)
+region_queue = Queue(20)
 def command_run(command, timeout=30):
     proc = subprocess.Popen(command, bufsize=409600, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
     #poll_seconds = .250
@@ -137,17 +138,63 @@ class TiDBCluster:
             regions.append(region)
         return regions
 
-    def get_phy_table_size(self, dbname, tabname):
+    #return total_size,sst_file_list which include sst_node_id,sst_name
+    def get_phy_table_size(self, dbname, tabname,parallel=1):
         total_size = 0
+        sst_file_list = []
         sstfile_map = {}
         for sstfile in self.get_store_sstfiles_bystoreall():
             sstfile_map[sstfile.sst_node_id, sstfile.sst_name] = sstfile.sst_size
-        for region in self.get_regions4table(dbname, tabname):
-            for each_sstfile in self.get_leader_region_sstfiles(region.leader_store_node_id, region.region_id):
-                key = (region.leader_store_node_id, each_sstfile)
-                if key in sstfile_map:
-                    total_size += int(sstfile_map[key])
-        return total_size
+        if parallel == 1:
+            for region in self.get_regions4table(dbname, tabname):
+                for each_sstfile in self.get_leader_region_sstfiles(region.leader_store_node_id, region.region_id):
+                    key = (region.leader_store_node_id, each_sstfile)
+                    if key in sstfile_map:
+                        total_size += int(sstfile_map[key])
+                        sst_file_list.append(key)
+        elif parallel > 1:
+            #Parameter Reference
+            total_size_list = [0]
+            def get_regions(dbname,tabname):
+                for region in self.get_regions4table(dbname, tabname):
+                    log.debug("put region into region_queue:%s" % (region.region_id))
+                    region_queue.put((region.leader_store_node_id,region.region_id))
+                for i in range(parallel):
+                    #signal close region_queue
+                    log.debug("put region into region_queue:None")
+                    region_queue.put(None)
+            region_thread = threading.Thread(target=get_regions,args=(dbname,tabname))
+            region_thread.start()
+            threads = []
+            for i in range(parallel):
+                t = threading.Thread(target=self.get_leader_region_sstfiles_muti,args=(region_queue,))
+                t.start()
+                threads.append(t)
+            def get_size_from_property_queue(property_queue,total_size_list):
+                log.debug("get_size_from_property_queue")
+                none_cnt = 0
+                while True:
+                    data = property_queue.get()
+                    if data is None:
+                        none_cnt = none_cnt + 1
+                        if none_cnt >= parallel:
+                            return
+                        else:
+                            continue
+                    (leader_store_node_id,sstfiles) = data
+                    for each_sstfile in sstfiles:
+                        key = (leader_store_node_id, each_sstfile)
+                        if key in sstfile_map:
+                            total_size_list[0] += int(sstfile_map[key])
+                            sst_file_list.append(key)
+                    property_queue.task_done()
+            t1 = threading.Thread(target=get_size_from_property_queue,args=(property_queue,total_size_list))
+            t1.start()
+            for t in threads:t.join()
+            region_thread.join()
+            t1.join()
+            total_size = total_size_list[0]
+        return total_size,sst_file_list
 
     def get_all_stores(self):
         req = ""
@@ -213,17 +260,57 @@ class TiDBCluster:
                         sstfiles.extend([x.strip() for x in each_line_fields[1].split(",")])
         return sstfiles
 
+    def get_leader_region_sstfiles_muti(self, region_queue):
+        log.debug("get_leader_region_sstfiles_muti")
+        while True:
+            data = region_queue.get()
+            if data is None:
+                log.debug("get_leader_region_sstfiles_muti:region_queue is None")
+                property_queue.put(None)
+                return
+            (leader_node_id,region_id) = data
+            sstfiles = []
+            cmd = "tiup ctl:%s tikv --host %s region-properties -r %d" % (self.cluster_version, leader_node_id, region_id)
+            result, recode = command_run(cmd)
+            # cannot find region when region split or region merge
+            if recode != 0:
+                log.warn("cmd:%s,message:%s" % (cmd, result))
+            else:
+                for each_line in result.splitlines():
+                    if each_line.find(".sst_files:") > 0:
+                        each_line_fields = each_line.split(":")
+                        each_line_fields_len = len(each_line_fields)
+                        if each_line_fields_len == 2 and each_line_fields[1] != "":
+                            sstfiles.extend([x.strip() for x in each_line_fields[1].split(",")])
+            property_queue.put((leader_node_id,sstfiles))
+            region_queue.task_done()
+
 if __name__ == "__main__":
-    log.basicConfig(level=log.INFO)
     arg_parser = argparse.ArgumentParser(description='get table size')
     arg_parser.add_argument('-c','--cluster',type=str,help='tidb cluster name')
     arg_parser.add_argument('-d','--dbname',type=str,help='database name')
     arg_parser.add_argument('-t','--tabname',type=str,help='table name')
-
+    arg_parser.add_argument('-p','--parallel',default=1,type=int,help='parallel')
+    arg_parser.add_argument('--loglevel',default="info",type=str,help='info,warn,debug')
+    arg_parser.add_argument('--extend',type=bool,default=False,help="show table's sstfiles")
     args = arg_parser.parse_args()
     cname = args.cluster
     dbname = args.dbname
     tabname = args.tabname
+    parallel = args.parallel
+    loglevel = args.loglevel
+    level = log.INFO
+    extend = args.extend
     cluster = TiDBCluster(cname)
-    tabsize = cluster.get_phy_table_size(dbname,tabname)
-    print("Cluster:%s,table_schema:%s,table_name:%s,size:%s" % (cname,dbname,tabname,tabsize))
+    if loglevel == "info":
+        level = log.INFO
+    elif loglevel == "warn":
+        level = log.WARN
+    elif loglevel == "debug":
+        level = log.DEBUG
+    log.basicConfig(level = level,format = '%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
+    tabsize,sstfile_list = cluster.get_phy_table_size(dbname,tabname,parallel)
+    output = ("Cluster:%s,table_schema:%s,table_name:%s,size:%s" % (cname,dbname,tabname,tabsize))
+    if extend:
+        output = output + ",sstfiles:%s" % (",".join([x+":"+y for x,y in sstfile_list]))
+    print(output)
