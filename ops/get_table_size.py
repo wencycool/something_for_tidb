@@ -390,14 +390,14 @@ if __name__ == "__main__":
         level = log.WARN
     elif loglevel == "debug":
         level = log.DEBUG
-    log.basicConfig(level=level,
+    log_filename = sys.argv[0]+".log"
+    log.basicConfig(filename=log_filename,filemode='a',level=level,
                     format='%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
     db_list = []
     if dbname == "*":
         db_list = cluster.get_dblist()
     else:
         db_list = [dbname]
-
     for each_db in db_list:
         tabname_list = [x.strip() for x in tabnamelist.split(",")]
         if len(tabname_list) == 1 and tabname_list[0] == "*":
