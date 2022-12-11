@@ -255,16 +255,18 @@ class TiDBCluster:
         log.info("total sstfiles count:%d,size in memory:%s" % (len(sstfile_map),printSize(sys.getsizeof(sstfile_map))))
         log.info("get sstfiles,done.")
         def get_regions(dbname, tabname_list):
+            tabname_list_region_count = 0
             log.info("get regions for db :%s ,table list:[%s] start" % (dbname,",".join(tabname_list)))
             for tabname, regions in self.get_regions4tables(dbname, tabname_list).items():
                 for region in regions:
                     log.debug("put region into region_queue:%s" % (region.region_id))
+                    tabname_list_region_count += tabname_list_region_count
                     region_queue.put((tabname, region.leader_store_node_id, region.region_id))
             for i in range(parallel):
                 # signal close region_queue
                 log.debug("put region into region_queue:None")
                 region_queue.put(None)
-            log.info("get regions for table list done.")
+            log.info("get regions for table list done,count:%d." % (tabname_list_region_count))
         region_thread = threading.Thread(target=get_regions, args=(dbname, tabname_list))
         region_thread.start()
         threads = []
@@ -369,8 +371,8 @@ class TiDBCluster:
         while True:
             data = region_queue.get()
             if data is None:
-                log.debug("get_leader_region_sstfiles_muti:region_queue is None")
                 property_queue.put(None)
+                log.debug("thread_id:%d,get_leader_region_sstfiles_muti done" % (thread_id))
                 return
             (tabname, leader_node_id, region_id) = data
             sstfiles = []
@@ -382,14 +384,13 @@ class TiDBCluster:
                 log.warn("cmd:%s,message:%s" % (cmd, result))
             else:
                 for each_line in result.splitlines():
-                    if each_line.find(".sst_files:") > 0:
+                    if each_line.find("sst_files:") > 0:
                         each_line_fields = each_line.split(":")
                         each_line_fields_len = len(each_line_fields)
                         if each_line_fields_len == 2 and each_line_fields[1] != "":
                             sstfiles.extend([x.strip() for x in each_line_fields[1].split(",")])
             property_queue.put((tabname, leader_node_id, sstfiles))
             region_queue.task_done()
-        log.debug("thread_id:%d,get_leader_region_sstfiles_muti done" % (thread_id))
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description='get table size')
