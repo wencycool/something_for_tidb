@@ -129,8 +129,31 @@ class TiDBCluster:
         if recode != 0:
             raise Exception("tikv-ctl check error,cmd:%s,message:%s" % (cmd, result))
 
+    def get_dblist(self,ignore=['performance_schema','metrics_schema','information_schema','mysql']):
+        db_list = []
+        req = ""
+        for node in self.tidb_nodes:
+            if node.role == "tidb":
+                req = "http://%s:%s/schema" % (node.host, node.status_port)
+                break
+        if req == "":
+            raise Exception("cannot find db list,%s" % (req))
+        rep = request.urlopen(req)
+        if rep.getcode() != 200:
+            raise Exception(req)
+        rep_data = rep.read()
+        if rep_data == "":
+            raise Exception("%s,data is None" % (req))
+        json_data = json.loads(rep_data)
+        for each_db in json_data:
+            each_dbname = each_db["db_name"]["L"]
+            if each_dbname not in ignore:
+                db_list.append(each_dbname)
+        return db_list
+
     def get_tablelist4db(self, dbname):
         tabname_list = []
+        req = ""
         for node in self.tidb_nodes:
             if node.role == "tidb":
                 req = "http://%s:%s/schema/%s" % (node.host, node.status_port, dbname)
@@ -319,7 +342,7 @@ class TiDBCluster:
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description='get table size')
     arg_parser.add_argument('-c', '--cluster', type=str, help='tidb cluster name')
-    arg_parser.add_argument('-d', '--dbname', type=str, help='database name')
+    arg_parser.add_argument('-d', '--dbname', type=str, help='database name,* mains all databases')
     arg_parser.add_argument('-t', '--tabnamelist', type=str,
                             help='table name,* mains all tables for database,muti table should like this "t1,t2,t3"')
     arg_parser.add_argument('-p', '--parallel', default=1, type=int, help='parallel')
@@ -336,11 +359,18 @@ if __name__ == "__main__":
         level = log.DEBUG
     log.basicConfig(level=level,
                     format='%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
-    tabname_list = [x.strip() for x in tabnamelist.split(",")]
-    if len(tabname_list) == 1 and tabname_list[0] == "*":
-        tabname_list = cluster.get_tablelist4db(dbname)
-    tables_map = cluster.get_phy_tables_size(dbname, tabname_list, parallel)
-    for tabname, size in sorted(tables_map.items(),reverse=True,key=lambda x:x[1]):
-        db_total_size += size
-        print("tabname:%-30s,tablesize:%-20d,format-tablesize:%20s" % (tabname, size,printSize(size)))
-    print("all_table_size:%-20d,format-all_table_size:%20s" % (db_total_size,printSize(db_total_size)))
+    db_list = []
+    if dbname == "*":
+        db_list = cluster.get_dblist()
+    else:
+        db_list = [dbname]
+
+    for each_db in db_list:
+        tabname_list = [x.strip() for x in tabnamelist.split(",")]
+        if len(tabname_list) == 1 and tabname_list[0] == "*":
+            tabname_list = cluster.get_tablelist4db(each_db)
+        tables_map = cluster.get_phy_tables_size(each_db, tabname_list, parallel)
+        for tabname, size in sorted(tables_map.items(),reverse=True,key=lambda x:x[1]):
+            db_total_size += size
+            print("tablename:%-70s,tablesize:%-20d,format-tablesize:%20s" % (tabname, size,printSize(size)))
+        #print("all_table_size:%-20d,format-all_table_size:%20s" % (db_total_size,printSize(db_total_size)))
