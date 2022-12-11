@@ -219,6 +219,7 @@ class TiDBCluster:
             if req == "":
                 log.error("cannot find regions,%s" % (req))
                 return table_regions_map
+            log.info("get table:%s region info:%s" % (dbname+"."+tabname,req))
             try:
                 rep = request.urlopen(req)
             except Exception as e:
@@ -260,7 +261,7 @@ class TiDBCluster:
             for tabname, regions in self.get_regions4tables(dbname, tabname_list).items():
                 for region in regions:
                     log.debug("put region into region_queue:%s" % (region.region_id))
-                    tabname_list_region_count += tabname_list_region_count
+                    tabname_list_region_count += 1
                     region_queue.put((tabname, region.leader_store_node_id, region.region_id))
             for i in range(parallel):
                 # signal close region_queue
@@ -384,11 +385,13 @@ class TiDBCluster:
                 log.warn("cmd:%s,message:%s" % (cmd, result))
             else:
                 for each_line in result.splitlines():
-                    if each_line.find("sst_files:") > 0:
+                    if each_line.find("sst_files:") > -1:
                         each_line_fields = each_line.split(":")
                         each_line_fields_len = len(each_line_fields)
                         if each_line_fields_len == 2 and each_line_fields[1] != "":
                             sstfiles.extend([x.strip() for x in each_line_fields[1].split(",")])
+            if len(sstfiles) == 0:
+                log.error("tabname:%s,region:%d's sstfile cannot found,cmd:%s" % (tabname,region_id,cmd))
             property_queue.put((tabname, leader_node_id, sstfiles))
             region_queue.task_done()
 
@@ -423,5 +426,5 @@ if __name__ == "__main__":
             tabname_list = cluster.get_tablelist4db(each_db)
         tables_map = cluster.get_phy_tables_size(each_db, tabname_list, parallel)
         for tabname, size in sorted(tables_map.items(),reverse=True,key=lambda x:x[1]):
-            print("tablename:%-70s,tablesize:%-20d,format-tablesize:%20s" % (tabname, size,printSize(size)))
+            print("tablename:%-40s,tablesize:%-20d,format-tablesize:%20s" % (tabname, size,printSize(size)))
         #print("all_table_size:%-20d,format-all_table_size:%20s" % (db_total_size,printSize(db_total_size)))
