@@ -9,7 +9,9 @@ import json
 import logging as log
 import subprocess
 import sys
+import time
 import threading
+import tempfile
 
 if float(sys.version[:3]) <= 2.7:
     import urllib as request
@@ -23,20 +25,42 @@ property_queue = Queue(100)
 region_queue = Queue(100)
 
 
-def command_run(command, timeout=30):
-    proc = subprocess.Popen(command, bufsize=409600, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-    # poll_seconds = .250
-    # deadline = time.time() + timeout
-    # while time.time() < deadline and proc.poll() is None:
-    #    time.sleep(poll_seconds)
-    # if proc.poll() is None:
-    #    if float(sys.version[:3]) >= 2.6:
-    #        proc.terminate()
-    stdout, stderr = proc.communicate()
-    if float(sys.version[:3]) <= 2.7:
-        return str(stdout) + str(stderr), proc.returncode
-    return str(stdout, 'UTF-8') + str(stderr, 'UTF-8'), proc.returncode
-
+def command_run(command,use_temp=False, timeout=30):
+    #用临时表空间效率太低，在tiup exec获取sstfile的时候因为数据量较大避免卡死建议开启，如果在获取tikv region property时候建议采用PIPE方式，效率更高
+    if use_temp:
+        if float(sys.version[:3]) <= 2.7:
+            out_temp = tempfile.SpooledTemporaryFile(bufsize=100*1024)
+        else:
+            out_temp = tempfile.SpooledTemporaryFile(buffering=100*1024)
+        out_fileno = out_temp.fileno()
+        proc = subprocess.Popen(command,stdout=out_fileno, stderr=out_fileno, shell=True)
+        poll_seconds = .250
+        deadline = time.time() + timeout
+        while time.time() < deadline and proc.poll() is None:
+           time.sleep(poll_seconds)
+        if proc.poll() is None:
+           if float(sys.version[:3]) >= 2.6:
+               proc.terminate()
+        #stdout, stderr = proc.communicate()
+        proc.wait()
+        out_temp.seek(0)
+        result = out_temp.read()
+        if float(sys.version[:3]) <= 2.7:
+            return result,proc.returncode
+        return str(result, 'UTF-8'), proc.returncode
+    else:
+        proc = subprocess.Popen(command, bufsize=40960, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+        poll_seconds = .250
+        #deadline = time.time() + timeout
+        #while time.time() < deadline and proc.poll() is None:
+        #    time.sleep(poll_seconds)
+        #if proc.poll() is None:
+        #    if float(sys.version[:3]) >= 2.6:
+        #        proc.terminate()
+        stdout, stderr = proc.communicate()
+        if float(sys.version[:3]) <= 2.7:
+            return str(stdout) + str(stderr), proc.returncode
+        return str(stdout, 'UTF-8') + str(stderr, 'UTF-8'), proc.returncode
 def printSize(size):
     if size<(1<<10):
         return "%.2fB" % (size)
@@ -194,7 +218,11 @@ class TiDBCluster:
             if rep.getcode() != 200:
                 log.error("cannot find regions,%s" % (req))
                 continue
-            json_data = json.loads(rep.read())
+            rep_data = rep.read()
+            if rep_data == "":
+                log.error("table:%s,no regions" % (tabname))
+                continue
+            json_data = json.loads(rep_data)
             for each_region in json_data["record_regions"]:
                 region = Region()
                 region.region_id = each_region["region_id"]
@@ -295,7 +323,7 @@ class TiDBCluster:
             if node.role != "tikv": continue
             cmd = '''tiup cluster exec %s --command='find %s/db/*.sst |xargs stat -c "%s"|grep -Po "\d+\.sst:\d+"' -N %s''' % (
                 self.cluster_name, node.data_dir, "%n:%s", node.host)
-            result, recode = command_run(cmd, timeout=600)
+            result, recode = command_run(cmd,use_temp=True, timeout=600)
             log.debug(cmd)
             if recode != 0:
                 raise Exception("get sst file info error,cmd:%s,message:%s" % (cmd, result))
