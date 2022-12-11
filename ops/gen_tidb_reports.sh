@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 #每天执行一次脚本，放到crontab中
+#部署在tidb-server节点的tidb用户下，且tidb用户需要这是login-path免密认证登录到mysql中
 #默认清理15天前的数据，压缩一天前的数据
 #00 02 * * * /db/dbawork/tools/gen_tidb_report.sh
 #test模式：sh xxx.sh test ,会跳过循环和时间间隔完整执行一次脚本
