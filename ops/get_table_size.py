@@ -13,9 +13,10 @@ import threading
 
 if float(sys.version[:3]) <= 2.7:
     import urllib as request
+    from Queue import Queue
 else:
     import urllib.request as request
-from queue import Queue
+    from queue import Queue
 
 # python3
 property_queue = Queue(100)
