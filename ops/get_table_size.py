@@ -92,6 +92,7 @@ class TiDBCluster:
         self.tidb_nodes = []
         self._get_clusterinfo()
         self._check_env()
+        self._sstfiles_list = []
 
     def _get_clusterinfo(self):
         display_command = "tiup cluster display %s" % (self.cluster_name)
@@ -286,6 +287,8 @@ class TiDBCluster:
         return stores
 
     def get_store_sstfiles_bystoreall(self):
+        if len(self._sstfiles_list) !=0:
+            return self._sstfiles_list
         sstfiles = []
         for node in self.tidb_nodes:
             if node.role != "tikv": continue
@@ -309,6 +312,7 @@ class TiDBCluster:
                     sstfile.sst_size = each_line_fields[1]
                     sstfile.sst_node_id = node.id
                     sstfiles.append(sstfile)
+        self._sstfiles_list = sstfiles
         return sstfiles
 
     # leader region
