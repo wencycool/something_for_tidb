@@ -120,10 +120,10 @@ class TiDBCluster:
         self._sstfiles_list = []
 
     def _get_clusterinfo(self):
+        log.debug("TiDBCluster._get_clusterinfo")
         display_command = "tiup cluster display %s" % (self.cluster_name)
         result, recode = command_run(display_command)
         log.debug("tiup display command:%s" % (display_command))
-        log.debug("result:" + result)
         if recode != 0:
             raise Exception("tiup display error:%s" % result)
         for each_line in result.splitlines():
@@ -151,11 +151,13 @@ class TiDBCluster:
 
     def _check_env(self):
         cmd = "tiup ctl:%s tikv --version" % (self.cluster_version)
+        log.debug("TiDBCluster._check_env,cmd:%s" % (cmd))
         result, recode = command_run(cmd)
         if recode != 0:
             raise Exception("tikv-ctl check error,cmd:%s,message:%s" % (cmd, result))
 
     def get_dblist(self,ignore=['performance_schema','metrics_schema','information_schema','mysql']):
+        log.debug("TiDBCluster.get_dblist")
         db_list = []
         req = ""
         for node in self.tidb_nodes:
@@ -164,6 +166,7 @@ class TiDBCluster:
                 break
         if req == "":
             raise Exception("cannot find db list,%s" % (req))
+        log.debug("get_dblist.request:%s" % (req))
         rep = request.urlopen(req)
         if rep.getcode() != 200:
             raise Exception(req)
@@ -175,9 +178,11 @@ class TiDBCluster:
             each_dbname = each_db["db_name"]["L"]
             if each_dbname not in ignore:
                 db_list.append(each_dbname)
+        log.info("db_list:%s" % (",".join(db_list)))
         return db_list
 
     def get_tablelist4db(self, dbname):
+        log.debug("TiDBCluster.get_tablelist4db")
         tabname_list = []
         req = ""
         for node in self.tidb_nodes:
@@ -186,6 +191,7 @@ class TiDBCluster:
                 break
         if req == "":
             raise Exception("cannot find table list for db,%s" % (req))
+        log.debug("get_tablelist4db.request:%s" % (req))
         rep = request.urlopen(req)
         if rep.getcode() != 200:
             raise Exception(req)
@@ -195,12 +201,15 @@ class TiDBCluster:
         json_data = json.loads(rep_data)
         for each_table in json_data:
             tabname_list.append(each_table["name"]["L"])
+        log.info("tabname_list:%s" % (",".join(tabname_list)))
         return tabname_list
 
     def get_regions4tables(self, dbname, tabname_list):
+        log.debug("TiDBCluster.get_regions4tables")
         req = ""
         table_regions_map = {}
         stores = self.get_all_stores()
+        log.debug("tabname_list:%s" % (",".join(tabname_list)))
         for tabname in tabname_list:
             regions = []
             for node in self.tidb_nodes:
@@ -236,12 +245,17 @@ class TiDBCluster:
         return table_regions_map
 
     def get_phy_tables_size(self, dbname, tabname_list, parallel=1):
+        log.debug("TiDBCluster.get_phy_tables_size")
         table_map = {}  # 打印每一张表的大小
         sstfile_map = {}
+        log.info("<----start get tables size---->")
+        log.info("get sstfiles...")
         for sstfile in self.get_store_sstfiles_bystoreall():
             sstfile_map[sstfile.sst_node_id, sstfile.sst_name] = sstfile.sst_size
-
+        log.info("total sstfiles count:%d" % (len(sstfile_map)))
+        log.info("get sstfiles,done.")
         def get_regions(dbname, tabname_list):
+            log.info("get regions for db :%s ,table list:[%s] start" % (dbname,",".join(tabname_list)))
             for tabname, regions in self.get_regions4tables(dbname, tabname_list).items():
                 for region in regions:
                     log.debug("put region into region_queue:%s" % (region.region_id))
@@ -250,19 +264,20 @@ class TiDBCluster:
                 # signal close region_queue
                 log.debug("put region into region_queue:None")
                 region_queue.put(None)
-
+            log.info("get regions for table list done.")
         region_thread = threading.Thread(target=get_regions, args=(dbname, tabname_list))
         region_thread.start()
         threads = []
         for i in range(parallel):
-            t = threading.Thread(target=self.get_leader_region_sstfiles_muti, args=(region_queue,))
+            t = threading.Thread(target=self.get_leader_region_sstfiles_muti, args=(region_queue,i))
             t.start()
             threads.append(t)
 
         def get_size_from_property_queue(property_queue, table_map):
-            log.debug("get_size_from_property_queue")
+            log.debug("get_size_from_property_queue start")
             none_cnt = 0
             sstfile_map_filter = {}  # 当表中已经存在该sst后则不重复计算
+            exists_tables_map = {} #用于粗略判断当前正在计算的表进度
             while True:
                 data = property_queue.get()
                 if data is None:
@@ -275,6 +290,10 @@ class TiDBCluster:
                 for each_sstfile in sstfiles:
                     key = (leader_store_node_id, each_sstfile)
                     key_map_filter = (tabname, leader_store_node_id, each_sstfile)
+                    #todo exists_tables_map
+                    if tabname not in exists_tables_map:
+                        exists_tables_map[tabname] = None
+                        log.info("start compute table %s's size" % (tabname))
                     if key in sstfile_map:
                         if key_map_filter in sstfile_map_filter:
                             continue
@@ -284,14 +303,15 @@ class TiDBCluster:
                             table_map[tabname] += int(sstfile_map[key])
                         else:
                             table_map[tabname] = int(sstfile_map[key])
-
                 property_queue.task_done()
+                log.debug("get_size_from_property_queue done")
 
         t1 = threading.Thread(target=get_size_from_property_queue, args=(property_queue, table_map))
         t1.start()
-        for t in threads: t.join()
+        for i in threads:i.join()
         region_thread.join()
         t1.join()
+        log.info("<----end get tables size---->")
         return table_map
 
     def get_all_stores(self):
@@ -345,8 +365,8 @@ class TiDBCluster:
         return sstfiles
 
     # leader region
-    def get_leader_region_sstfiles_muti(self, region_queue):
-        log.debug("get_leader_region_sstfiles_muti")
+    def get_leader_region_sstfiles_muti(self, region_queue,thread_id=0):
+        log.debug("thread_id:%d,get_leader_region_sstfiles_muti start" % (thread_id))
         while True:
             data = region_queue.get()
             if data is None:
@@ -370,7 +390,7 @@ class TiDBCluster:
                             sstfiles.extend([x.strip() for x in each_line_fields[1].split(",")])
             property_queue.put((tabname, leader_node_id, sstfiles))
             region_queue.task_done()
-
+        log.debug("thread_id:%d,get_leader_region_sstfiles_muti done" % (thread_id))
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description='get table size')
@@ -381,9 +401,7 @@ if __name__ == "__main__":
     arg_parser.add_argument('-p', '--parallel', default=1, type=int, help='parallel')
     arg_parser.add_argument('--loglevel', default="info", type=str, help='info,warn,debug')
     args = arg_parser.parse_args()
-    db_total_size = 0
     cname, dbname, tabnamelist, parallel, loglevel, level = args.cluster, args.dbname, args.tabnamelist, args.parallel, args.loglevel, log.INFO
-    cluster = TiDBCluster(cname)
     if loglevel == "info":
         level = log.INFO
     elif loglevel == "warn":
@@ -394,6 +412,7 @@ if __name__ == "__main__":
     log.basicConfig(filename=log_filename,filemode='a',level=level,
                     format='%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
     db_list = []
+    cluster = TiDBCluster(cname)
     if dbname == "*":
         db_list = cluster.get_dblist()
     else:
@@ -404,6 +423,5 @@ if __name__ == "__main__":
             tabname_list = cluster.get_tablelist4db(each_db)
         tables_map = cluster.get_phy_tables_size(each_db, tabname_list, parallel)
         for tabname, size in sorted(tables_map.items(),reverse=True,key=lambda x:x[1]):
-            db_total_size += size
             print("tablename:%-70s,tablesize:%-20d,format-tablesize:%20s" % (tabname, size,printSize(size)))
         #print("all_table_size:%-20d,format-all_table_size:%20s" % (db_total_size,printSize(db_total_size)))
