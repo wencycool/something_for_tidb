@@ -26,7 +26,7 @@ region_queue = Queue(100)
 
 
 def command_run(command,use_temp=False, timeout=30):
-    #用临时表空间效率太低，在tiup exec获取sstfile的时候因为数据量较大避免卡死建议开启，如果在获取tikv region property时候建议采用PIPE方式，效率更高
+    #用临时文件存放结果集效率太低，在tiup exec获取sstfile的时候因为数据量较大避免卡死建议开启，如果在获取tikv region property时候建议采用PIPE方式，效率更高
     if use_temp:
         if float(sys.version[:3]) <= 2.7:
             out_temp = tempfile.SpooledTemporaryFile(bufsize=100*1024)
@@ -252,7 +252,7 @@ class TiDBCluster:
         log.info("get sstfiles...")
         for sstfile in self.get_store_sstfiles_bystoreall():
             sstfile_map[sstfile.sst_node_id, sstfile.sst_name] = sstfile.sst_size
-        log.info("total sstfiles count:%d" % (len(sstfile_map)))
+        log.info("total sstfiles count:%d,size in memory:%s" % (len(sstfile_map),printSize(sys.getsizeof(sstfile_map))))
         log.info("get sstfiles,done.")
         def get_regions(dbname, tabname_list):
             log.info("get regions for db :%s ,table list:[%s] start" % (dbname,",".join(tabname_list)))
@@ -290,7 +290,6 @@ class TiDBCluster:
                 for each_sstfile in sstfiles:
                     key = (leader_store_node_id, each_sstfile)
                     key_map_filter = (tabname, leader_store_node_id, each_sstfile)
-                    #todo exists_tables_map
                     if tabname not in exists_tables_map:
                         exists_tables_map[tabname] = None
                         log.info("start compute table %s's size" % (tabname))
