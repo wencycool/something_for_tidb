@@ -121,7 +121,8 @@ class TableInfo:
     def get_index_cnt(self):
         return len(self.index_name_list)
 
-    def _get_xx_size(self, region_map,predict=False):
+    #predict=True的情况下会将sstfile为空的region进行预估
+    def _get_xx_size(self, region_map,predict=True):
         # 已有的数据大小
         total_size = 0
         total_region_cnt = len(region_map)
@@ -552,12 +553,12 @@ if __name__ == "__main__":
             tabname_list = cluster.get_tablelist4db(each_db)
         tables_map = cluster.get_phy_tables_size(each_db, tabname_list, parallel)
         if printFlag:
-            print("%-10s%-30s%-15s%-15s%-15s%-15s%-15s%-15s%-15s%-15s" % (
+            print("%-10s%-30s%-15s%-15s%-18s%-15s%-18s%-15s%-18s%-15s" % (
                 "DataBase", "TabName", "Partition", "IndexCnt", "DataSize","DataSizeF", "Indexsize","IndexsizeF","Tablesize","TablesizeF"))
             printFlag = False
-        for full_tabname, val in sorted(tables_map.items(), reverse=True, key=lambda x: x[1]):
+        for full_tabname, val in sorted(tables_map.items(), reverse=True, key=lambda x: x[1]["table_size"]):
             # print("tablename:%-40s,tablesize:%-20d,format-tablesize:%20s" % (tabname, size,printSize(size)))
-            print("%-10s%-30s%-15s%-15s%-15s%-15s%-15s%-15s%-15s%-15s" % (
+            print("%-10s%-30s%-15s%-15s%-18s%-15s%-18s%-15s%-18s%-15s" % (
                 val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],printSize(val["data_size"]),
                 val["index_size"],printSize(val["index_size"]), val["table_size"],printSize(val["table_size"])
             ))
