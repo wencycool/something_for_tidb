@@ -381,16 +381,19 @@ class TiDBCluster:
                 region_queue.put(None)
         region_thread = threading.Thread(target=put_regions_to_queue,
                                          args=(table_region_map, dbname, tabname_list, region_queue, parallel))
+        log.info("put_regions_to_queue")
         region_thread.start()
         threads = []
+        log.info("region_queue->get_leader_region_sstfiles_muti")
         for i in range(parallel):
             t = threading.Thread(target=self.get_leader_region_sstfiles_muti,
                                  args=(table_region_map, region_queue, i))
             t.start()
             threads.append(t)
         for i in threads: i.join()
+        log.info("region_queue->get_leader_region_sstfiles_muti done")
         region_thread.join()
-
+        log.info("put_regions_to_queue done")
         #获取sstfile的物理大小信息
         #如果当前table_region_map中包含的sst文件数量比较小，则直接下发sst文件名去tikv上查找sst文件的物理大小，如果比较多则直接去tikv获取全部的sst文件信息
         fetchall_flag = False
