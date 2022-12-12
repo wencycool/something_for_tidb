@@ -212,6 +212,7 @@ class TiDBCluster:
         log.debug("tabname_list:%s" % (",".join(tabname_list)))
         for tabname in tabname_list:
             regions = []
+            regions_map_filter = {} #多个分区时候去重
             for node in self.tidb_nodes:
                 if node.role == "tidb":
                     req = "http://%s:%s/tables/%s/%s/regions" % (node.host, node.status_port, dbname, tabname)
@@ -233,16 +234,30 @@ class TiDBCluster:
                 log.error("table:%s,no regions" % (tabname))
                 continue
             json_data = json.loads(rep_data)
-            for each_region in json_data["record_regions"]:
-                region = Region()
-                region.region_id = each_region["region_id"]
-                region.leader_id = each_region["leader"]["id"]
-                region.leader_store_id = each_region["leader"]["store_id"]
-                for store in stores:
-                    if store.id == region.leader_store_id:
-                        region.leader_store_node_id = store.address
-                regions.append(region)
-            table_regions_map[dbname + "." + tabname] = regions
+            json_data_list = []
+            if isinstance(json_data,dict):
+                json_data_list.append(json_data)
+            elif isinstance(json_data,list):
+                json_data_list = json_data
+            else:
+                log.error("table:%s's json data is not dict or list,source data:%s,json data:%s" % (dbname+"."+tabname,rep_data,json_data))
+            try:
+                for each_partition in json_data_list:
+                    for each_region in each_partition["record_regions"]:
+                        region = Region()
+                        region.region_id = each_region["region_id"]
+                        region.leader_id = each_region["leader"]["id"]
+                        region.leader_store_id = each_region["leader"]["store_id"]
+                        for store in stores:
+                            if store.id == region.leader_store_id:
+                                region.leader_store_node_id = store.address
+                        if region.region_id not in regions_map_filter:
+                            regions.append(region)
+                            regions_map_filter[region.region_id] = None
+            except Exception as e:
+                log.error(log.error("table:%s's json data format error,source data:%s,json data:%s,messges:%s" % (dbname+"."+tabname,rep_data,json_data,e)))
+            if len(regions) != 0:
+                table_regions_map[dbname + "." + tabname] = regions
         return table_regions_map
 
     def get_phy_tables_size(self, dbname, tabname_list, parallel=1):
