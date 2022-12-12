@@ -7,6 +7,7 @@
 import argparse
 import json
 import logging as log
+import os.path
 import subprocess
 import sys
 import tempfile
@@ -168,7 +169,6 @@ class Region:
 class SSTFile:
     def __init__(self):
         self.sst_name = ""
-        # self.sst_path = ""
         self.sst_size = ""
         self.sst_node_id = ""
         self.region_id_list = []  # 当前sstfile包含哪些region_id
@@ -184,6 +184,7 @@ class TiDBCluster:
         self._get_clusterinfo()
         self._check_env()
         self._sstfiles_list = []
+        self._get_store_sstfiles_bystoreall_once = False #是否调用过get_store_sstfiles_bystoreall方法，如果调用过则说明_sstfiles_list包含所有的sstfile文件信息，不需要重复执行
         self._table_region_map = {}  # 所有表的region信息
         self._stores = []  # stores列表
 
@@ -362,12 +363,6 @@ class TiDBCluster:
         table_region_map = self._get_regions4tables(dbname, tabname_list)  # 获取列表的region相关信息
         log.info("<----start get tables size---->")
         log.info("get sstfiles...")
-        for sstfile in self.get_store_sstfiles_bystoreall():
-            sstfile_map[(sstfile.sst_node_id, sstfile.sst_name)] = sstfile.sst_size
-        log.info(
-            "total sstfiles count:%d,size in memory:%s" % (len(sstfile_map), printSize(sys.getsizeof(sstfile_map))))
-        log.info("get sstfiles,done.")
-
         # 获取region信息,并将结果写入region_queue
         def put_regions_to_queue(table_region_map, dbname, tabname_list, region_queue, parallel):
             tabname_list_region_count = 0
@@ -395,6 +390,27 @@ class TiDBCluster:
             threads.append(t)
         for i in threads: i.join()
         region_thread.join()
+
+        #获取sstfile的物理大小信息
+        #如果当前table_region_map中包含的sst文件数量比较小，则直接下发sst文件名去tikv上查找sst文件的物理大小，如果比较多则直接去tikv获取全部的sst文件信息
+        fetchall_flag = False
+        #大于500个region则直接全部获取
+        if reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map) for k in table_region_map]) > 100:
+            fetchall_flag = True
+        #大于5000个sst文件则全部直接获取
+        elif reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map[region_id].sstfile_list) for k in table_region_map for region_id in table_region_map[k].all_region_map ]) > 1000:
+            fetchall_flag = True
+
+        if fetchall_flag:
+            sstfile_list = self.get_store_sstfiles_bystoreall()
+        #如果不一次性全部获取则需要去各个节点获取sstfile的大小信息
+        else:
+            sstfile_list = self.get_store_sstfiles_bysstfilelist([each_sstfile  for k in table_region_map for region_id in table_region_map[k].all_region_map for each_sstfile in table_region_map[k].all_region_map[region_id].sstfile_list])
+        for sstfile in sstfile_list:
+            sstfile_map[(sstfile.sst_node_id, sstfile.sst_name)] = sstfile.sst_size
+        log.info(
+            "total sstfiles count:%d,size in memory:%s" % (len(sstfile_map), printSize(sys.getsizeof(sstfile_map))))
+        log.info("get sstfiles,done.")
         #在sstfile_map中查查找table_region_map中的sstfile文件并填充数据
         for k in table_region_map:
             for region_id in table_region_map[k].all_region_map:
@@ -449,11 +465,57 @@ class TiDBCluster:
         self._stores = stores
         return self._stores
 
+    #根据sstfile文件名去tikv上获取文件大小
+    #入参：[SSTFile]
+    def get_store_sstfiles_bysstfilelist(self,sstfiles):
+        log.info("tikv-property method:get_store_sstfiles_bysstfilelist,sstfiles count:%d" % (len(sstfiles)))
+        if len(self._sstfiles_list) != 0 and self._get_store_sstfiles_bystoreall_once is True:
+            return self._sstfiles_list
+        sstfiles_node_map = {}  #key:node_id,value:sstfile_list
+        result_sstfiles = []
+        for each_sstfile in sstfiles:
+            if each_sstfile.sst_node_id in sstfiles_node_map:
+                sstfiles_node_map[each_sstfile.sst_node_id].append(each_sstfile)
+            else:
+                sstfiles_node_map[each_sstfile.sst_node_id] = [each_sstfile]
+        for each_node_id,sstfiles in sstfiles_node_map.items():
+            data_dir = ""
+            host = ""
+            for node in self.tidb_nodes:
+                if each_node_id == node.id:
+                    data_dir = node.data_dir
+                    host = node.host
+            if data_dir == "":
+                log.error("cannot find node_id:%s sstfile's data dir" % (each_node_id))
+                continue
+            sstfile_path = os.path.join(data_dir,"db")
+            cmd = '''tiup cluster exec %s --command='cd %s;for ssf in %s ;do stat -c "%s" $ssf ;done' -N %s ''' % (
+                self.cluster_name,sstfile_path," ".join([sstf.sst_name for sstf in sstfiles]),"%n:%s",host)
+            result, recode = command_run(cmd, use_temp=True, timeout=600)
+            log.debug(cmd)
+            if recode != 0:
+                raise Exception("get sst file info error,cmd:%s,message:%s" % (cmd, result))
+            inline = False
+            for each_line in result.splitlines():
+                if each_line.startswith("stdout:"):
+                    inline = True
+                    continue
+                if inline:
+                    each_line_fields = each_line.split(":")
+                    each_line_fields_len = len(each_line_fields)
+                    if each_line_fields_len != 2 or each_line.find(".sst:") == -1: continue
+                    sstfile = SSTFile()
+                    sstfile.sst_name = each_line_fields[0]
+                    sstfile.sst_size = int(each_line_fields[1])
+                    sstfile.sst_node_id = each_node_id
+                    result_sstfiles.append(sstfile)
+        return result_sstfiles
     # 获取所有tikv的sstfiles列表
     def get_store_sstfiles_bystoreall(self):
-        if len(self._sstfiles_list) != 0:
+        log.info("tikv-property method:get_store_sstfiles_bystoreall")
+        if len(self._sstfiles_list) != 0 and self._get_store_sstfiles_bystoreall_once is True:
             return self._sstfiles_list
-        sstfiles = []
+        result_sstfiles = []
         for node in self.tidb_nodes:
             if node.role != "tikv": continue
             cmd = '''tiup cluster exec %s --command='find %s/db/*.sst |xargs stat -c "%s"|grep -Po "\d+\.sst:\d+"' -N %s''' % (
@@ -475,9 +537,10 @@ class TiDBCluster:
                     sstfile.sst_name = each_line_fields[0]
                     sstfile.sst_size = int(each_line_fields[1])
                     sstfile.sst_node_id = node.id
-                    sstfiles.append(sstfile)
-        self._sstfiles_list = sstfiles
-        return sstfiles
+                    result_sstfiles.append(sstfile)
+        self._sstfiles_list = result_sstfiles
+        self._get_store_sstfiles_bystoreall_once = True
+        return result_sstfiles
 
     # 获取提供的region信息，多线程获取property信息
     # 入参：
