@@ -398,12 +398,14 @@ class TiDBCluster:
         #如果当前table_region_map中包含的sst文件数量比较小，则直接下发sst文件名去tikv上查找sst文件的物理大小，如果比较多则直接去tikv获取全部的sst文件信息
         fetchall_flag = False
         #大于500个region则直接全部获取
-        if reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map) for k in table_region_map]) > 100:
-            fetchall_flag = True
-        #大于5000个sst文件则全部直接获取
-        elif reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map[region_id].sstfile_list) for k in table_region_map for region_id in table_region_map[k].all_region_map ]) > 1000:
-            fetchall_flag = True
-
+        try:
+            if reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map) for k in table_region_map]) > 100:
+                fetchall_flag = True
+            #大于5000个sst文件则全部直接获取
+            elif reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map[region_id].sstfile_list) for k in table_region_map for region_id in table_region_map[k].all_region_map ]) > 1000:
+                fetchall_flag = True
+        except Exception as e:
+            log.error("reduce region count or  sst count error!,maybe table not exists ,messages:%s" % (e))
         if fetchall_flag:
             sstfile_list = self.get_store_sstfiles_bystoreall()
         #如果不一次性全部获取则需要去各个节点获取sstfile的大小信息
