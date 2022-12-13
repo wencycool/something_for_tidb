@@ -399,7 +399,7 @@ class TiDBCluster:
         fetchall_flag = False
         #大于500个region则直接全部获取
         try:
-            if reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map) for k in table_region_map]) > 100:
+            if reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map) for k in table_region_map]) > 500:
                 fetchall_flag = True
             #大于5000个sst文件则全部直接获取
             elif reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map[region_id].sstfile_list) for k in table_region_map for region_id in table_region_map[k].all_region_map ]) > 1000:
@@ -591,9 +591,9 @@ class TiDBCluster:
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description='get table size')
-    arg_parser.add_argument('-c', '--cluster', type=str, help='tidb cluster name')
-    arg_parser.add_argument('-d', '--dbname', type=str, help='database name,* mains all databases')
-    arg_parser.add_argument('-t', '--tabnamelist', type=str,
+    arg_parser.add_argument('-c', '--cluster', type=str,required=True, help='tidb cluster name')
+    arg_parser.add_argument('-d', '--dbname', type=str, required=True,help='database name,* mains all databases')
+    arg_parser.add_argument('-t', '--tabnamelist', type=str,required=True,
                             help='table name,* mains all tables for database,muti table should like this "t1,t2,t3"')
     arg_parser.add_argument('-p', '--parallel', default=1, type=int, help='parallel')
     arg_parser.add_argument('--loglevel', default="info", type=str, help='info,warn,debug')
