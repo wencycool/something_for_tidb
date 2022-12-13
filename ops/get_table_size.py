@@ -120,7 +120,9 @@ class TableInfo:
         return len(self.partition_name_list) > 1
 
     def get_index_cnt(self):
-        return len(self.index_name_list)
+        if len(self.partition_name_list) == 0:
+            return 0
+        return len(self.index_name_list) / len(self.partition_name_list)
 
     #predict=True的情况下会将sstfile为空的region进行预估
     def _get_xx_size(self, region_map,predict=True):
@@ -396,27 +398,39 @@ class TiDBCluster:
         log.info("put_regions_to_queue done")
         #获取sstfile的物理大小信息
         #如果当前table_region_map中包含的sst文件数量比较小，则直接下发sst文件名去tikv上查找sst文件的物理大小，如果比较多则直接去tikv获取全部的sst文件信息
-        fetchall_flag = False
-        #大于500个region则直接全部获取
-        try:
-            if reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map) for k in table_region_map]) > 500:
-                fetchall_flag = True
-            #大于5000个sst文件则全部直接获取
-            elif reduce(lambda x,y:x+y,[len(table_region_map[k].all_region_map[region_id].sstfile_list) for k in table_region_map for region_id in table_region_map[k].all_region_map ]) > 1000:
-                fetchall_flag = True
-        except Exception as e:
-            log.error("reduce region count or  sst count error!,maybe table not exists ,messages:%s" % (e))
+        fetchall_flag = True
+        #region_max:当所有表的region数大于此值后直接根据 region获取sstfile大小
+        #sstfile_max: 当所有表的涉及到的sstfile数大于此值后直接根据region获取sstfile大小
+        def useFetchall(table_region_map,region_max,sstfile_max):
+            temp_region_cnt = 0
+            temp_sstfiles_cnt = 0
+            try:
+                for k in table_region_map:
+                    for region_id in table_region_map[k].all_region_map:
+                        if temp_region_cnt > region_max:
+                            return True
+                        temp_region_cnt += 1
+                        for each_sstfile in table_region_map[k].all_region_map[region_id].sstfile_list:
+                            if temp_sstfiles_cnt > sstfile_max:
+                                return True
+                            temp_sstfiles_cnt += 1
+            except Exception as e:
+                log.error("useFetchall method error:%s" % (e))
+            return False
+        fetchall_flag = useFetchall(table_region_map,200,5000)
         if fetchall_flag:
             sstfile_list = self.get_store_sstfiles_bystoreall()
         #如果不一次性全部获取则需要去各个节点获取sstfile的大小信息
         else:
             sstfile_list = self.get_store_sstfiles_bysstfilelist([each_sstfile  for k in table_region_map for region_id in table_region_map[k].all_region_map for each_sstfile in table_region_map[k].all_region_map[region_id].sstfile_list])
+
         for sstfile in sstfile_list:
             sstfile_map[(sstfile.sst_node_id, sstfile.sst_name)] = sstfile.sst_size
         log.info(
             "total sstfiles count:%d,size in memory:%s" % (len(sstfile_map), printSize(sys.getsizeof(sstfile_map))))
         log.info("get sstfiles,done.")
         #在sstfile_map中查查找table_region_map中的sstfile文件并填充数据
+        #k为full表名
         for k in table_region_map:
             for region_id in table_region_map[k].all_region_map:
                 i = 0
@@ -578,13 +592,15 @@ class TiDBCluster:
                         each_line_fields_len = len(each_line_fields)
                         if each_line_fields_len == 2 and each_line_fields[1] != "":
                             for sstfilename in [x.strip() for x in each_line_fields[1].split(",")]:
+                                if sstfilename == "":
+                                    continue
                                 sstfile = SSTFile()
                                 sstfile.sst_name = sstfilename
                                 sstfile.region_id_list.append(region_id)
                                 sstfile.sst_node_id = leader_node_id
                                 sstfiles.append(sstfile)
             if len(sstfiles) == 0:
-                log.error("tabname:%s,region:%d's sstfile cannot found,cmd:%s" % (tabname, region_id, cmd))
+                log.error("region-properties:tabname:%s,region:%d's sstfile cannot found,cmd:%s" % (tabname, region_id, cmd))
             table_region_map[full_tabname].all_region_map[region_id].sstfile_list = sstfiles
             region_queue.task_done()
 
