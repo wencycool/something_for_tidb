@@ -114,6 +114,7 @@ class TableInfo:
         self.partition_name_list = []
         self.index_region_map = {}
         self.all_region_map = {}  # 表和索引的region（包括重合部分),获取property时就用变量
+        self.sstfiles_withoutsize_cnt = 0 #在region property中存在，但是在实际物理文件中不存在的sstfile记录数
 
     def is_partition(self):
         return len(self.partition_name_list) > 1
@@ -124,27 +125,36 @@ class TableInfo:
         return len(self.index_name_list) / len(self.partition_name_list)
 
     #predict=True的情况下会将sstfile为空的region进行预估
+    #预估提供两种方案：1、对于没有size的sst按照每一个8MB方式填充，该方案是默认方案；2、计算出总的sst文件的大小算出每一个sst文件的平均值，利用平均值填充没有size的sst
     def _get_xx_size(self, region_map,predict=True):
+        #predict_method-> 1: sstfile_size=8MB;2: sstfile_size = avg(sstfiles_size)
+        predict_method = 1
         # 已有的数据大小
         total_size = 0
-        total_region_cnt = len(region_map)
-        nosst_region_cnt = 0
+        #预估sstfile没有大小的情况
+        total_sstfiles_cnt = 0 #包含没有大小的sstfile文件
         sstfile_dictinct_map = {} #避免sstfile被多个region重复计算
         for region in region_map.values():
             if len(region.sstfile_list) == 0:
-                nosst_region_cnt += 1
                 continue
             for sstfile in region.sstfile_list:
+                total_sstfiles_cnt += 1
                 sstfile_dictinct_map[(sstfile.sst_node_id,sstfile.sst_name)] = sstfile.sst_size
         for size in sstfile_dictinct_map.values():
             total_size += size
-        sst_region_cnt = total_region_cnt - nosst_region_cnt
-        if sst_region_cnt == 0:
-            return 0
         if predict:
-            return total_size * total_region_cnt / sst_region_cnt
-        else:
-            return total_size
+            sstfiles_withsize_cnt = total_sstfiles_cnt - self.sstfiles_withoutsize_cnt
+            if sstfiles_withsize_cnt == 0:
+                return total_size
+            else:
+                if predict_method == 1:
+                    return total_size + self.sstfiles_withoutsize_cnt * (8<<20)
+                elif predict_method == 2:
+                    return total_size * total_sstfiles_cnt / sstfiles_withsize_cnt
+                else:
+                    log.error("no this predict_method:%s,return total_size without predict" % (predict_method))
+                    return total_size
+        return total_size
 
     def get_all_data_size(self):
         return self._get_xx_size(self.data_region_map)
@@ -437,6 +447,7 @@ class TiDBCluster:
                     key = (each_sstfile.sst_node_id,each_sstfile.sst_name)
                     region = table_region_map[k].all_region_map[region_id]
                     if key not in sstfile_map:
+                        table_region_map[k].sstfiles_withoutsize_cnt += 1
                         log.error("table:%s,region:%d,node_id:%s,sstfilename:%s cannot find in sstfile_map" % (
                             k,region_id,region.leader_store_node_id,each_sstfile.sst_name))
                     else:
