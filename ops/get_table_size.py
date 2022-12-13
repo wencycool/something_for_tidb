@@ -13,7 +13,6 @@ import sys
 import tempfile
 import threading
 import time
-from functools import reduce
 
 if float(sys.version[:3]) <= 2.7:
     import urllib as request
@@ -50,7 +49,7 @@ def command_run(command, use_temp=False, timeout=30):
         return str(result, 'UTF-8'), proc.returncode
     else:
         proc = subprocess.Popen(command, bufsize=40960, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        poll_seconds = .250
+        #poll_seconds = .250
         # deadline = time.time() + timeout
         # while time.time() < deadline and proc.poll() is None:
         #    time.sleep(poll_seconds)
@@ -612,7 +611,7 @@ if __name__ == "__main__":
     arg_parser.add_argument('-t', '--tabnamelist', type=str,required=True,
                             help='table name,* mains all tables for database,muti table should like this "t1,t2,t3"')
     arg_parser.add_argument('-p', '--parallel', default=1, type=int, help='parallel')
-    arg_parser.add_argument('--loglevel', default="info", type=str, help='info,warn,debug')
+    arg_parser.add_argument('--loglevel', default="info", type=str, help='critical,error,warn,info,debug')
     args = arg_parser.parse_args()
     cname, dbname, tabnamelist, parallel, loglevel, level = args.cluster, args.dbname, args.tabnamelist, args.parallel, args.loglevel, log.INFO
     if loglevel == "info":
@@ -621,6 +620,10 @@ if __name__ == "__main__":
         level = log.WARN
     elif loglevel == "debug":
         level = log.DEBUG
+    elif loglevel == "error":
+        level = log.ERROR
+    elif loglevel == "critical":
+        level = log.CRITICAL
     log_filename = sys.argv[0] + ".log"
     log.basicConfig(filename=log_filename, filemode='a', level=level,
                     format='%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
@@ -637,12 +640,12 @@ if __name__ == "__main__":
             tabname_list = cluster.get_tablelist4db(each_db)
         tables_map = cluster.get_phy_tables_size(each_db, tabname_list, parallel)
         if printFlag:
-            print("%-10s%-30s%-15s%-15s%-18s%-15s%-18s%-15s%-18s%-15s" % (
+            print("%-20s%-50s%-15s%-15s%-18s%-15s%-18s%-15s%-18s%-15s" % (
                 "DataBase", "TabName", "Partition", "IndexCnt", "DataSize","DataSizeF", "Indexsize","IndexsizeF","Tablesize","TablesizeF"))
             printFlag = False
         for full_tabname, val in sorted(tables_map.items(), reverse=True, key=lambda x: x[1]["table_size"]):
             # print("tablename:%-40s,tablesize:%-20d,format-tablesize:%20s" % (tabname, size,printSize(size)))
-            print("%-10s%-30s%-15s%-15s%-18s%-15s%-18s%-15s%-18s%-15s" % (
+            print("%-20s%-50s%-15s%-15s%-18s%-15s%-18s%-15s%-18s%-15s" % (
                 val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],printSize(val["data_size"]),
                 val["index_size"],printSize(val["index_size"]), val["table_size"],printSize(val["table_size"])
             ))
