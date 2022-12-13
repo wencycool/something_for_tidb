@@ -613,7 +613,54 @@ class TiDBCluster:
                 log.error("region-properties:tabname:%s,region:%d's sstfile cannot found,cmd:%s" % (tabname, region_id, cmd))
             table_region_map[full_tabname].all_region_map[region_id].sstfile_list = sstfiles
             region_queue.task_done()
+class  OutPutShow():
+    def __init__(self):
+        self.title_list = [] #标题
+        self.data_list = [] #数据列表，二维列表
+        self.max_with_map = {} #记录每一列的每一个值的长度最大值，用于展现
+        self._output_format = ""
 
+    def _check(self):
+        for i in range(len(self.title_list)):
+            self.max_with_map[i] = len(str(self.title_list[i]))
+        if len(self.data_list) != 0:
+            for each_row in self.data_list:
+                for i in range(len(each_row)):
+                    col_len = len(str(each_row[i]))
+                    if i in self.max_with_map:
+                        if self.max_with_map[i] < col_len:
+                            self.max_with_map[i] = col_len
+                    else:
+                        self.max_with_map[i] = col_len
+                if not isinstance(each_row,list):
+                    log.error("输出结果非二维列表")
+                    return False
+                else:
+                    if len(each_row) != len(self.title_list):
+                        log.error("当前行数据列数和标题列数不一致,data:%s" % (each_row))
+                        return False
+
+        return True
+
+    def _format(self):
+        if self._output_format != "":
+            return self._output_format
+        format_list = []
+        for i in range(len(self.max_with_map)):
+            format_list.append("%-" + str(self.max_with_map[i] + 2) + "s")
+        return "".join(format_list)
+    def show(self,with_title=True):
+        if not self._check():
+            log.error("output show check error")
+            return
+        log.info("output format:%s" % (self._format()))
+        #打印标题
+        if with_title:
+            print(self._format() % tuple(self.title_list))
+        #打印数据
+        for each_line_list in self.data_list:
+            if isinstance(each_line_list,list):
+                print(self._format() % tuple(each_line_list))
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description='get table size')
@@ -644,19 +691,15 @@ if __name__ == "__main__":
         db_list = cluster.get_dblist()
     else:
         db_list = [dbname]
-    printFlag = True
+    print_output = OutPutShow()
+    print_output.title_list = ["DataBase", "TabName", "Partition", "IndexCnt", "DataSize","DataSizeF", "Indexsize","IndexsizeF","Tablesize","TablesizeF"]
     for each_db in db_list:
         tabname_list = [x.strip() for x in tabnamelist.split(",")]
         if len(tabname_list) == 1 and tabname_list[0] == "*":
             tabname_list = cluster.get_tablelist4db(each_db)
         tables_map = cluster.get_phy_tables_size(each_db, tabname_list, parallel)
-        if printFlag:
-            print("%-20s%-50s%-15s%-15s%-18s%-15s%-18s%-15s%-18s%-15s" % (
-                "DataBase", "TabName", "Partition", "IndexCnt", "DataSize","DataSizeF", "Indexsize","IndexsizeF","Tablesize","TablesizeF"))
-            printFlag = False
         for full_tabname, val in sorted(tables_map.items(), reverse=True, key=lambda x: x[1]["table_size"]):
-            # print("tablename:%-40s,tablesize:%-20d,format-tablesize:%20s" % (tabname, size,printSize(size)))
-            print("%-20s%-50s%-15s%-15s%-18s%-15s%-18s%-15s%-18s%-15s" % (
-                val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],printSize(val["data_size"]),
-                val["index_size"],printSize(val["index_size"]), val["table_size"],printSize(val["table_size"])
-            ))
+            print_output.data_list.append([val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],printSize(val["data_size"]),
+                                      val["index_size"],printSize(val["index_size"]), val["table_size"],printSize(val["table_size"])])
+
+    print_output.show()
