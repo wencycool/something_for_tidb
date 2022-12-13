@@ -169,7 +169,7 @@ class Region:
 class SSTFile:
     def __init__(self):
         self.sst_name = ""
-        self.sst_size = ""
+        self.sst_size = 0
         self.sst_node_id = ""
         self.region_id_list = []  # 当前sstfile包含哪些region_id
 
@@ -425,7 +425,7 @@ class TiDBCluster:
                     region = table_region_map[k].all_region_map[region_id]
                     if key not in sstfile_map:
                         log.error("table:%s,region:%d,node_id:%s,sstfilename:%s cannot find in sstfile_map" % (
-                            k,region_id,region.leader_store_node_id,each_sstfile))
+                            k,region_id,region.leader_store_node_id,each_sstfile.sst_name))
                     else:
                         table_region_map[k].all_region_map[region_id].sstfile_list[i].sst_size = sstfile_map[key]
                     i += 1
