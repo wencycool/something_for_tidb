@@ -138,8 +138,8 @@ class TableInfo:
             if len(region.sstfile_list) == 0:
                 continue
             for sstfile in region.sstfile_list:
-                total_sstfiles_cnt += 1
                 sstfile_dictinct_map[(sstfile.sst_node_id,sstfile.sst_name)] = sstfile.sst_size
+        total_sstfiles_cnt = len(sstfile_dictinct_map)
         for size in sstfile_dictinct_map.values():
             total_size += size
         if predict:
@@ -461,7 +461,7 @@ class TiDBCluster:
             table_map[full_tabname] = {
                 "dbname": tabinfo.dbname,
                 "tabname": tabinfo.tabname,
-                "is_partition": tabinfo.is_partition(),
+                "is_partition": "False" if tabinfo.is_partition() == False else "True-"+ str(len(tabinfo.partition_name_list)),
                 "index_count": tabinfo.get_index_cnt(),
                 "data_size": tabinfo.get_all_data_size(),
                 "index_size": tabinfo.get_all_index_size(),
@@ -617,21 +617,21 @@ class  OutPutShow():
     def __init__(self):
         self.title_list = [] #标题
         self.data_list = [] #数据列表，二维列表
-        self.max_with_map = {} #记录每一列的每一个值的长度最大值，用于展现
+        self.max_width_map = {} #记录每一列的每一个值的长度最大值，用于展现
         self._output_format = ""
 
     def _check(self):
         for i in range(len(self.title_list)):
-            self.max_with_map[i] = len(str(self.title_list[i]))
+            self.max_width_map[i] = len(str(self.title_list[i]))
         if len(self.data_list) != 0:
             for each_row in self.data_list:
                 for i in range(len(each_row)):
                     col_len = len(str(each_row[i]))
-                    if i in self.max_with_map:
-                        if self.max_with_map[i] < col_len:
-                            self.max_with_map[i] = col_len
+                    if i in self.max_width_map:
+                        if self.max_width_map[i] < col_len:
+                            self.max_width_map[i] = col_len
                     else:
-                        self.max_with_map[i] = col_len
+                        self.max_width_map[i] = col_len
                 if not isinstance(each_row,list):
                     log.error("输出结果非二维列表")
                     return False
@@ -646,8 +646,8 @@ class  OutPutShow():
         if self._output_format != "":
             return self._output_format
         format_list = []
-        for i in range(len(self.max_with_map)):
-            format_list.append("%-" + str(self.max_with_map[i] + 2) + "s")
+        for i in range(len(self.max_width_map)):
+            format_list.append("%-" + str(self.max_width_map[i] + 2) + "s")
         return "".join(format_list)
     def show(self,with_title=True):
         if not self._check():
