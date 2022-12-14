@@ -114,7 +114,7 @@ class TableInfo:
         self.partition_name_list = []
         self.index_region_map = {}
         self.all_region_map = {}  # 表和索引的region（包括重合部分),获取property时就用变量
-        self.sstfiles_withoutsize_cnt = 0 #在region property中存在，但是在实际物理文件中不存在的sstfile记录数
+        self.sstfiles_withoutsize_map = {} #key:(node_id,sstname);value:SSTFile region property中存在，但是在实际物理文件中不存在的sstfile，去重
 
     def is_partition(self):
         return len(self.partition_name_list) > 1
@@ -131,24 +131,24 @@ class TableInfo:
         predict_method = 1
         # 已有的数据大小
         total_size = 0
-        #预估sstfile没有大小的情况
-        total_sstfiles_cnt = 0 #包含没有大小的sstfile文件
         sstfile_dictinct_map = {} #避免sstfile被多个region重复计算
         for region in region_map.values():
             if len(region.sstfile_list) == 0:
                 continue
             for sstfile in region.sstfile_list:
                 sstfile_dictinct_map[(sstfile.sst_node_id,sstfile.sst_name)] = sstfile.sst_size
-        total_sstfiles_cnt = len(sstfile_dictinct_map)
+        total_sstfiles_cnt = len(sstfile_dictinct_map) #包含没有大小的sstfile文件
         for size in sstfile_dictinct_map.values():
             total_size += size
         if predict:
-            sstfiles_withsize_cnt = total_sstfiles_cnt - self.sstfiles_withoutsize_cnt
+            sstfiles_withoutsize_cnt = len(self.sstfiles_withoutsize_map)
+            sstfiles_withsize_cnt = total_sstfiles_cnt - sstfiles_withoutsize_cnt
             if sstfiles_withsize_cnt == 0:
                 return total_size
             else:
                 if predict_method == 1:
-                    return total_size + self.sstfiles_withoutsize_cnt * (8<<20)
+                    return total_size + sstfiles_withoutsize_cnt * (8<<20)
+                #todo 如果算平均时候sstfile全部去重来计算，total_sstfiles_cnt是表中所有的region property出来的sst去重,sstfiles_withoutsize_cnt是去重后的没有大小的sst个数，但是全部按照去重做可能精准度不如全部都不去重的算
                 elif predict_method == 2:
                     return total_size * total_sstfiles_cnt / sstfiles_withsize_cnt
                 else:
@@ -447,7 +447,8 @@ class TiDBCluster:
                     key = (each_sstfile.sst_node_id,each_sstfile.sst_name)
                     region = table_region_map[k].all_region_map[region_id]
                     if key not in sstfile_map:
-                        table_region_map[k].sstfiles_withoutsize_cnt += 1
+                        #table_region_map[k].sstfiles_withoutsize_cnt += 1
+                        table_region_map[k].sstfiles_withoutsize_map[(each_sstfile.sst_node_id,each_sstfile.sst_name)] = each_sstfile
                         log.error("table:%s,region:%d,node_id:%s,sstfilename:%s cannot find in sstfile_map" % (
                             k,region_id,region.leader_store_node_id,each_sstfile.sst_name))
                     else:
