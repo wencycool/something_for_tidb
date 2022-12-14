@@ -80,7 +80,7 @@ def command_run(command, use_temp=False, timeout=30):
         return _str(mutable[0]) + _str(mutable[1]), mutable[2].returncode
 
 
-def printSize(size):
+def format_size(size):
     if size < (1 << 10):
         return "%.2fB" % (size)
     elif size < (1 << 20):
@@ -461,7 +461,7 @@ class TiDBCluster:
         for sstfile in sstfile_list:
             sstfile_map[(sstfile.sst_node_id, sstfile.sst_name)] = sstfile.sst_size
         log.info(
-            "total sstfiles count:%d,size in memory:%s" % (len(sstfile_map), printSize(sys.getsizeof(sstfile_map))))
+            "total sstfiles count:%d,size in memory:%s" % (len(sstfile_map), format_size(sys.getsizeof(sstfile_map))))
         log.info("get sstfiles,done.")
         # 在sstfile_map中查查找table_region_map中的sstfile文件并填充数据
         # k为full表名
@@ -640,7 +640,7 @@ class TiDBCluster:
                                 sstfile.sst_node_id = leader_node_id
                                 sstfiles.append(sstfile)
             if len(sstfiles) == 0:
-                log.error(
+                log.debug(
                     "region-properties:tabname:%s,region:%d's sstfile cannot found,cmd:%s" % (tabname, region_id, cmd))
             table_region_map[full_tabname].all_region_map[region_id].sstfile_list = sstfiles
             region_queue.task_done()
@@ -737,7 +737,7 @@ if __name__ == "__main__":
         for full_tabname, val in sorted(tables_map.items(), reverse=True, key=lambda x: x[1]["table_size"]):
             print_output.data_list.append(
                 [val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],
-                 printSize(val["data_size"]),
-                 val["index_size"], printSize(val["index_size"]), val["table_size"], printSize(val["table_size"])])
+                 format_size(val["data_size"]),
+                 val["index_size"], format_size(val["index_size"]), val["table_size"], format_size(val["table_size"])])
 
     print_output.show()
