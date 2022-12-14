@@ -12,9 +12,11 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 
-if float(sys.version[:3]) <= 2.7:
+#判断python的版本
+isV3 = float(sys.version[:3]) > 2.7
+
+if not isV3:
     import urllib as request
     from Queue import Queue
 else:
@@ -23,44 +25,52 @@ else:
 
 region_queue = Queue(100)  # 内容为（dbname,tabname,region_id）的元组
 
-
 def command_run(command, use_temp=False, timeout=30):
+    def _str(input):
+        if isV3:
+            if isinstance(input,bytes):
+                return str(input,'UTF-8')
+            return str(input)
+        return str(input)
+    mutable = ['','',None]
     # 用临时文件存放结果集效率太低，在tiup exec获取sstfile的时候因为数据量较大避免卡死建议开启，如果在获取tikv region property时候建议采用PIPE方式，效率更高
     if use_temp:
-        if float(sys.version[:3]) <= 2.7:
-            out_temp = tempfile.SpooledTemporaryFile(bufsize=100 * 1024)
-        else:
+        if isV3:
             out_temp = tempfile.SpooledTemporaryFile(buffering=100 * 1024)
+        else:
+            out_temp = tempfile.SpooledTemporaryFile(bufsize=100 * 1024
         out_fileno = out_temp.fileno()
-        proc = subprocess.Popen(command, stdout=out_fileno, stderr=out_fileno, shell=True)
-        poll_seconds = .250
-        deadline = time.time() + timeout
-        while time.time() < deadline and proc.poll() is None:
-            time.sleep(poll_seconds)
-        if proc.poll() is None:
-            if float(sys.version[:3]) >= 2.6:
-                proc.terminate()
-        # stdout, stderr = proc.communicate()
-        proc.wait()
-        out_temp.seek(0)
-        result = out_temp.read()
-        if float(sys.version[:3]) <= 2.7:
-            return result, proc.returncode
-        return str(result, 'UTF-8'), proc.returncode
+        def target():
+            mutable[2] = subprocess.Popen(command, stdout=out_fileno, stderr=out_fileno, shell=True)
+            mutable[2].wait()
+        th = threading.Thread(target=target)
+        th.start()
+        th.join(timeout)
+        #超时处理
+        if th.is_alive():
+            mutable[2].terminate()
+            th.join()
+            if mutable[2].returncode == 0:
+                mutable[2].returncode = 9
+            result = "Timeout Error!"
+        else:
+            out_temp.seek(0)
+            result = out_temp.read()
+        out_temp.close()
+        return _str(result),mutable[2].returncode
     else:
-        proc = subprocess.Popen(command, bufsize=40960, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
-        #poll_seconds = .250
-        # deadline = time.time() + timeout
-        # while time.time() < deadline and proc.poll() is None:
-        #    time.sleep(poll_seconds)
-        # if proc.poll() is None:
-        #    if float(sys.version[:3]) >= 2.6:
-        #        proc.terminate()
-        stdout, stderr = proc.communicate()
-        if float(sys.version[:3]) <= 2.7:
-            return str(stdout) + str(stderr), proc.returncode
-        return str(stdout, 'UTF-8') + str(stderr, 'UTF-8'), proc.returncode
-
+        def target():
+            mutable[2] = subprocess.Popen(command,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            mutable[0],mutable[1] = mutable[2].communicate()
+        th = threading.Thread(target=target)
+        th.start()
+        th.join(timeout)
+        if th.is_alive():
+            mutable[2].terminate()
+            th.join()
+            if mutable[2].returncode == 0:
+                mutable[2].returncode = 1
+        return _str(mutable[0]) + _str(mutable[1]),mutable[2].returncode
 
 def printSize(size):
     if size < (1 << 10):
@@ -125,10 +135,10 @@ class TableInfo:
         return len(self.index_name_list) / len(self.partition_name_list)
 
     #predict=True的情况下会将sstfile为空的region进行预估
-    #预估提供两种方案：1、对于没有size的sst按照每一个8MB方式填充，该方案是默认方案；2、计算出总的sst文件的大小算出每一个sst文件的平均值，利用平均值填充没有size的sst
+    #预估提供两种方案：1、对于没有size的sst按照每一个8MB方式填充；2、计算出总的sst文件的大小算出每一个sst文件的平均值，利用平均值填充没有size的sst
     def _get_xx_size(self, region_map,predict=True):
         #predict_method-> 1: sstfile_size=8MB;2: sstfile_size = avg(sstfiles_size)
-        predict_method = 1
+        predict_method = 2
         # 已有的数据大小
         total_size = 0
         sstfile_dictinct_map = {} #避免sstfile被多个region重复计算
@@ -449,7 +459,7 @@ class TiDBCluster:
                     if key not in sstfile_map:
                         #table_region_map[k].sstfiles_withoutsize_cnt += 1
                         table_region_map[k].sstfiles_withoutsize_map[(each_sstfile.sst_node_id,each_sstfile.sst_name)] = each_sstfile
-                        log.error("table:%s,region:%d,node_id:%s,sstfilename:%s cannot find in sstfile_map" % (
+                        log.debug("table:%s,region:%d,node_id:%s,sstfilename:%s cannot find in sstfile_map" % (
                             k,region_id,region.leader_store_node_id,each_sstfile.sst_name))
                     else:
                         table_region_map[k].all_region_map[region_id].sstfile_list[i].sst_size = sstfile_map[key]
@@ -459,6 +469,7 @@ class TiDBCluster:
             dbname = tabinfo.dbname
             tabname = tabinfo.tabname
             full_tabname = dbname + "." + tabname
+            log.info("tabname:%s sstfiles_withoutsize_count:%d" % (full_tabname,len(tabinfo.sstfiles_withoutsize_map)))
             table_map[full_tabname] = {
                 "dbname": tabinfo.dbname,
                 "tabname": tabinfo.tabname,
