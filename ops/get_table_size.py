@@ -123,7 +123,7 @@ class Store:
 # 整个表的大小不一定等于数据大小+索引大小，因为数据和索引存在共用regino的情况
 
 class TableInfo:
-    def __init__(self):
+    def __init__(self,cf_info = None):
         self.dbname = ""
         self.tabname = ""
         # 同一张表的索引和数据可能放到同一个region上，在求表总大小时候需要去掉
@@ -133,6 +133,7 @@ class TableInfo:
         self.index_region_map = {}
         self.all_region_map = {}  # 表和索引的region（包括重合部分),获取property时就用变量
         self.sstfiles_withoutsize_map = {}  # key:(node_id,sstname);value:SSTFile region property中存在，但是在实际物理文件中不存在的sstfile，去重
+        self.cf_info = cf_info
 
     def is_partition(self):
         return len(self.partition_name_list) > 1
@@ -144,6 +145,7 @@ class TableInfo:
 
     # predict=True的情况下会将sstfile为空的region进行预估
     # 预估提供两种方案：1、对于没有size的sst按照每一个8MB方式填充；2、计算出总的sst文件的大小算出每一个sst文件的平均值，利用平均值填充没有size的sst
+    #prams:cf_info，如果当前sst文件只计算了writecf的，那么需要对defaultcf的sst文件进行预估
     def _get_xx_size(self, region_map, predict=True):
         # predict_method-> 1: sstfile_size=8MB;2: sstfile_size = avg(sstfiles_size)
         predict_method = 2
@@ -161,17 +163,17 @@ class TableInfo:
         if predict:
             sstfiles_withoutsize_cnt = len(self.sstfiles_withoutsize_map)
             sstfiles_withsize_cnt = total_sstfiles_cnt - sstfiles_withoutsize_cnt
-            if sstfiles_withsize_cnt == 0:
-                return total_size
-            else:
+            if sstfiles_withsize_cnt != 0:
                 if predict_method == 1:
-                    return total_size + sstfiles_withoutsize_cnt * (8 << 20)
+                    total_size += sstfiles_withoutsize_cnt * (8 << 20)
                 # todo 如果算平均时候sstfile全部去重来计算，total_sstfiles_cnt是表中所有的region property出来的sst去重,sstfiles_withoutsize_cnt是去重后的没有大小的sst个数，但是全部按照去重做可能精准度不如全部都不去重的算
                 elif predict_method == 2:
-                    return total_size * total_sstfiles_cnt / sstfiles_withsize_cnt
+                    total_size =  total_size * total_sstfiles_cnt / sstfiles_withsize_cnt
                 else:
                     log.error("no this predict_method:%s,return total_size without predict" % (predict_method))
-                    return total_size
+        if self.cf_info is not None:
+            #这里按照defaultcf的总大小的比例算，而不是defaultcf的总sstfile个数比例算
+            total_size = total_size * (self.cf_info.defaultcf_sstfiles_total_size + self.cf_info.writecf_sstfiles_total_size) / self.cf_info.writecf_sstfiles_total_size
         return total_size
 
     def get_all_data_size(self):
@@ -216,6 +218,11 @@ class TiDBCluster:
         self._get_store_sstfiles_bystoreall_once = False  # 是否调用过get_store_sstfiles_bystoreall方法，如果调用过则说明_sstfiles_list包含所有的sstfile文件信息，不需要重复执行
         self._table_region_map = {}  # 所有表的region信息
         self._stores = []  # stores列表
+        #通过region properties打印的信息中包含sst_files（不包含writecf.sst_files和defaultcf.sst_files），该值在源码中只包含了writecf的大小，需要估算defaultcf的大小
+        #新版本情况：https://github.com/tikv/tikv/blob/790c744e582d4fddfab2b884b40d7d5af14a47e1/src/server/debug.rs#L918
+        #老版本情况：https://github.com/tikv/tikv/blob/09a7e1efb40386d804f42ef6ba593f6b85924973/src/server/debug.rs#L918
+        self.property_only_writecf_mode = False #目前根据region的property结果来判断，todo 最好按照tidb的版本来判断
+
 
     def _get_clusterinfo(self):
         log.debug("TiDBCluster._get_clusterinfo")
@@ -314,7 +321,7 @@ class TiDBCluster:
         stores = self.get_all_stores()
         log.debug("tabname_list:%s" % (",".join(tabname_list)))
         for tabname in tabname_list:
-            table_info = TableInfo()
+            table_info = TableInfo(self.get_cf_info())
             table_info.dbname = dbname
             table_info.tabname = tabname
             for node in self.tidb_nodes:
@@ -628,6 +635,9 @@ class TiDBCluster:
             else:
                 for each_line in result.splitlines():
                     if each_line.find("sst_files:") > -1:
+                        #如果tikv-ctl region properties的结果中包含sst_files开头的说明打印的结果只包含了writecf的sst文件
+                        if each_line.find("sst_files:") == 0 and not self.property_only_writecf_mode:
+                            self.property_only_writecf_mode = True
                         each_line_fields = each_line.split(":")
                         each_line_fields_len = len(each_line_fields)
                         if each_line_fields_len == 2 and each_line_fields[1] != "":
@@ -645,6 +655,77 @@ class TiDBCluster:
             table_region_map[full_tabname].all_region_map[region_id].sstfile_list = sstfiles
             region_queue.task_done()
 
+    def get_cf_info(self):
+        if self.property_only_writecf_mode is not True:
+            return None
+        node_id = ""
+        for nd in self.tidb_nodes:
+            if nd.role == "prometheus":
+                node_id = nd.id
+                break
+        return CFInfo(node_id)
+
+
+
+#从writecf、defaucf的sstfile个数和大小信息
+#单例模式
+class CFInfo(object):
+    _instance = {}
+    def __new__(cls,prometheus_node_id):
+        if prometheus_node_id not in cls._instance:
+            cls._instance[prometheus_node_id] = super().__new__(cls)
+        return cls._instance[prometheus_node_id]
+    def __init__(self,prometheus_node_id):
+        self.prometheus_node_id = prometheus_node_id
+        self.defaultcf_sstfiles_count = 0
+        self.defaultcf_sstfiles_total_size = 0
+        self.writecf_sstfiles_count = 0
+        self.writecf_sstfiles_total_size = 0
+        self._get_sstfiles_info()
+    def _get_sstfiles_info(self):
+        tikv_engine_num_files_at_level_url = 'http://%s/api/v1/query?query=sum%28tikv_engine_num_files_at_level%29by%28cf%29' % (self.prometheus_node_id)
+        num_files_data,err = get_jsondata_from_url(tikv_engine_num_files_at_level_url)
+        if err is not None:
+            log.error(err)
+        else:
+            try:
+                for each_item in num_files_data["data"]["result"]:
+                    cf_type = each_item["metric"]["type"]
+                    cf_nums_str = each_item["value"][1]
+                    if cf_type == "write":
+                        self.writecf_sstfiles_count = int(cf_nums_str)
+                    elif cf_type == "default":
+                        self.defaultcf_sstfiles_count = int(cf_nums_str)
+            except Exception as e:
+                log.error(e)
+        tikv_engine_size_bytes_url = 'http://%s/api/v1/query?query=sum%28tikv_engine_size_bytes%29by%28cf%29' % (self.prometheus_node_id)
+        tikv_engine_size_data,err = get_jsondata_from_url(tikv_engine_size_bytes_url)
+        if err is not None:
+            log.error(err)
+        else:
+            try:
+                for each_item in tikv_engine_size_data["data"]["result"]:
+                    cf_type = each_item["metric"]["type"]
+                    cf_size_str = each_item["value"][1]
+                    if cf_type == "write":
+                        self.writecf_sstfiles_total_size = int(cf_size_str)
+                    elif cf_type == "default":
+                        self.defaultcf_sstfiles_total_size = int(cf_size_str)
+            except Exception as e:
+                log.error(e)
+
+#return:json data,error
+def get_jsondata_from_url(url):
+    if url == "":
+        return "","url is none"
+    try:
+        rep = request.urlopen(url)
+    except Exception as e:
+        return "",str(e)
+    rep_data = rep.read()
+    if rep_data == "":
+        return "","response from %s is none" % (url)
+    return json.loads(rep_data)
 
 class OutPutShow():
     def __init__(self):
