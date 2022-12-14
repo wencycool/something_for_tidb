@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 
-#判断python的版本
+# 判断python的版本
 isV3 = float(sys.version[:3]) > 2.7
 
 if not isV3:
@@ -25,28 +25,34 @@ else:
 
 region_queue = Queue(100)  # 内容为（dbname,tabname,region_id）的元组
 
+
 def command_run(command, use_temp=False, timeout=30):
     def _str(input):
         if isV3:
-            if isinstance(input,bytes):
-                return str(input,'UTF-8')
+            if isinstance(input, bytes):
+                return str(input, 'UTF-8')
             return str(input)
         return str(input)
-    mutable = ['','',None]
+
+    mutable = ['', '', None]
     # 用临时文件存放结果集效率太低，在tiup exec获取sstfile的时候因为数据量较大避免卡死建议开启，如果在获取tikv region property时候建议采用PIPE方式，效率更高
     if use_temp:
+        out_temp = None
+        out_fileno = None
         if isV3:
             out_temp = tempfile.SpooledTemporaryFile(buffering=100 * 1024)
         else:
-            out_temp = tempfile.SpooledTemporaryFile(bufsize=100 * 1024
+            out_temp = tempfile.SpooledTemporaryFile(bufsize=100 * 1024)
         out_fileno = out_temp.fileno()
+
         def target():
             mutable[2] = subprocess.Popen(command, stdout=out_fileno, stderr=out_fileno, shell=True)
             mutable[2].wait()
+
         th = threading.Thread(target=target)
         th.start()
         th.join(timeout)
-        #超时处理
+        # 超时处理
         if th.is_alive():
             mutable[2].terminate()
             th.join()
@@ -57,11 +63,12 @@ def command_run(command, use_temp=False, timeout=30):
             out_temp.seek(0)
             result = out_temp.read()
         out_temp.close()
-        return _str(result),mutable[2].returncode
+        return _str(result), mutable[2].returncode
     else:
         def target():
-            mutable[2] = subprocess.Popen(command,shell=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-            mutable[0],mutable[1] = mutable[2].communicate()
+            mutable[2] = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            mutable[0], mutable[1] = mutable[2].communicate()
+
         th = threading.Thread(target=target)
         th.start()
         th.join(timeout)
@@ -70,7 +77,8 @@ def command_run(command, use_temp=False, timeout=30):
             th.join()
             if mutable[2].returncode == 0:
                 mutable[2].returncode = 1
-        return _str(mutable[0]) + _str(mutable[1]),mutable[2].returncode
+        return _str(mutable[0]) + _str(mutable[1]), mutable[2].returncode
+
 
 def printSize(size):
     if size < (1 << 10):
@@ -119,12 +127,12 @@ class TableInfo:
         self.dbname = ""
         self.tabname = ""
         # 同一张表的索引和数据可能放到同一个region上，在求表总大小时候需要去掉
-        self.data_region_map = {} #key:region,value:region
+        self.data_region_map = {}  # key:region,value:region
         self.index_name_list = []
         self.partition_name_list = []
         self.index_region_map = {}
         self.all_region_map = {}  # 表和索引的region（包括重合部分),获取property时就用变量
-        self.sstfiles_withoutsize_map = {} #key:(node_id,sstname);value:SSTFile region property中存在，但是在实际物理文件中不存在的sstfile，去重
+        self.sstfiles_withoutsize_map = {}  # key:(node_id,sstname);value:SSTFile region property中存在，但是在实际物理文件中不存在的sstfile，去重
 
     def is_partition(self):
         return len(self.partition_name_list) > 1
@@ -134,20 +142,20 @@ class TableInfo:
             return 0
         return len(self.index_name_list) / len(self.partition_name_list)
 
-    #predict=True的情况下会将sstfile为空的region进行预估
-    #预估提供两种方案：1、对于没有size的sst按照每一个8MB方式填充；2、计算出总的sst文件的大小算出每一个sst文件的平均值，利用平均值填充没有size的sst
-    def _get_xx_size(self, region_map,predict=True):
-        #predict_method-> 1: sstfile_size=8MB;2: sstfile_size = avg(sstfiles_size)
+    # predict=True的情况下会将sstfile为空的region进行预估
+    # 预估提供两种方案：1、对于没有size的sst按照每一个8MB方式填充；2、计算出总的sst文件的大小算出每一个sst文件的平均值，利用平均值填充没有size的sst
+    def _get_xx_size(self, region_map, predict=True):
+        # predict_method-> 1: sstfile_size=8MB;2: sstfile_size = avg(sstfiles_size)
         predict_method = 2
         # 已有的数据大小
         total_size = 0
-        sstfile_dictinct_map = {} #避免sstfile被多个region重复计算
+        sstfile_dictinct_map = {}  # 避免sstfile被多个region重复计算
         for region in region_map.values():
             if len(region.sstfile_list) == 0:
                 continue
             for sstfile in region.sstfile_list:
-                sstfile_dictinct_map[(sstfile.sst_node_id,sstfile.sst_name)] = sstfile.sst_size
-        total_sstfiles_cnt = len(sstfile_dictinct_map) #包含没有大小的sstfile文件
+                sstfile_dictinct_map[(sstfile.sst_node_id, sstfile.sst_name)] = sstfile.sst_size
+        total_sstfiles_cnt = len(sstfile_dictinct_map)  # 包含没有大小的sstfile文件
         for size in sstfile_dictinct_map.values():
             total_size += size
         if predict:
@@ -157,8 +165,8 @@ class TableInfo:
                 return total_size
             else:
                 if predict_method == 1:
-                    return total_size + sstfiles_withoutsize_cnt * (8<<20)
-                #todo 如果算平均时候sstfile全部去重来计算，total_sstfiles_cnt是表中所有的region property出来的sst去重,sstfiles_withoutsize_cnt是去重后的没有大小的sst个数，但是全部按照去重做可能精准度不如全部都不去重的算
+                    return total_size + sstfiles_withoutsize_cnt * (8 << 20)
+                # todo 如果算平均时候sstfile全部去重来计算，total_sstfiles_cnt是表中所有的region property出来的sst去重,sstfiles_withoutsize_cnt是去重后的没有大小的sst个数，但是全部按照去重做可能精准度不如全部都不去重的算
                 elif predict_method == 2:
                     return total_size * total_sstfiles_cnt / sstfiles_withsize_cnt
                 else:
@@ -205,7 +213,7 @@ class TiDBCluster:
         self._get_clusterinfo()
         self._check_env()
         self._sstfiles_list = []
-        self._get_store_sstfiles_bystoreall_once = False #是否调用过get_store_sstfiles_bystoreall方法，如果调用过则说明_sstfiles_list包含所有的sstfile文件信息，不需要重复执行
+        self._get_store_sstfiles_bystoreall_once = False  # 是否调用过get_store_sstfiles_bystoreall方法，如果调用过则说明_sstfiles_list包含所有的sstfile文件信息，不需要重复执行
         self._table_region_map = {}  # 所有表的region信息
         self._stores = []  # stores列表
 
@@ -373,17 +381,19 @@ class TiDBCluster:
                     dbname + "." + tabname, rep_data, json_data, e)))
             # table_region_map[dbname + "." + tabname] = table_info
             log.info("dbname:%s,tabname:%s data_region_count:%d,index_region_count:%d,table_region_count:%d" % (
-                dbname, tabname, len(table_info.data_region_map), len(table_info.index_region_map), len(table_info.all_region_map)))
+                dbname, tabname, len(table_info.data_region_map), len(table_info.index_region_map),
+                len(table_info.all_region_map)))
             self._table_region_map[dbname + "." + tabname] = table_info
         return self._table_region_map
 
     def get_phy_tables_size(self, dbname, tabname_list, parallel=1):
         log.debug("TiDBCluster.get_phy_tables_size")
         table_map = {}  # 打印每一张表的大小
-        sstfile_map = {} #key:sstfile绝对路径,value:sstfile大小
+        sstfile_map = {}  # key:sstfile绝对路径,value:sstfile大小
         table_region_map = self._get_regions4tables(dbname, tabname_list)  # 获取列表的region相关信息
         log.info("<----start get tables size---->")
         log.info("get sstfiles...")
+
         # 获取region信息,并将结果写入region_queue
         def put_regions_to_queue(table_region_map, dbname, tabname_list, region_queue, parallel):
             tabname_list_region_count = 0
@@ -400,6 +410,7 @@ class TiDBCluster:
                 # signal close region_queue
                 log.debug("put region into region_queue:None")
                 region_queue.put(None)
+
         region_thread = threading.Thread(target=put_regions_to_queue,
                                          args=(table_region_map, dbname, tabname_list, region_queue, parallel))
         log.info("put_regions_to_queue")
@@ -415,12 +426,13 @@ class TiDBCluster:
         log.info("region_queue->get_leader_region_sstfiles_muti done")
         region_thread.join()
         log.info("put_regions_to_queue done")
-        #获取sstfile的物理大小信息
-        #如果当前table_region_map中包含的sst文件数量比较小，则直接下发sst文件名去tikv上查找sst文件的物理大小，如果比较多则直接去tikv获取全部的sst文件信息
+        # 获取sstfile的物理大小信息
+        # 如果当前table_region_map中包含的sst文件数量比较小，则直接下发sst文件名去tikv上查找sst文件的物理大小，如果比较多则直接去tikv获取全部的sst文件信息
         fetchall_flag = True
-        #region_max:当所有表的region数大于此值后直接根据 region获取sstfile大小
-        #sstfile_max: 当所有表的涉及到的sstfile数大于此值后直接根据region获取sstfile大小
-        def useFetchall(table_region_map,region_max,sstfile_max):
+
+        # region_max:当所有表的region数大于此值后直接根据 region获取sstfile大小
+        # sstfile_max: 当所有表的涉及到的sstfile数大于此值后直接根据region获取sstfile大小
+        def useFetchall(table_region_map, region_max, sstfile_max):
             temp_region_cnt = 0
             temp_sstfiles_cnt = 0
             try:
@@ -436,31 +448,35 @@ class TiDBCluster:
             except Exception as e:
                 log.error("useFetchall method error:%s" % (e))
             return False
-        fetchall_flag = useFetchall(table_region_map,200,5000)
+
+        fetchall_flag = useFetchall(table_region_map, 200, 5000)
         if fetchall_flag:
             sstfile_list = self.get_store_sstfiles_bystoreall()
-        #如果不一次性全部获取则需要去各个节点获取sstfile的大小信息
+        # 如果不一次性全部获取则需要去各个节点获取sstfile的大小信息
         else:
-            sstfile_list = self.get_store_sstfiles_bysstfilelist([each_sstfile  for k in table_region_map for region_id in table_region_map[k].all_region_map for each_sstfile in table_region_map[k].all_region_map[region_id].sstfile_list])
+            sstfile_list = self.get_store_sstfiles_bysstfilelist(
+                [each_sstfile for k in table_region_map for region_id in table_region_map[k].all_region_map for
+                 each_sstfile in table_region_map[k].all_region_map[region_id].sstfile_list])
 
         for sstfile in sstfile_list:
             sstfile_map[(sstfile.sst_node_id, sstfile.sst_name)] = sstfile.sst_size
         log.info(
             "total sstfiles count:%d,size in memory:%s" % (len(sstfile_map), printSize(sys.getsizeof(sstfile_map))))
         log.info("get sstfiles,done.")
-        #在sstfile_map中查查找table_region_map中的sstfile文件并填充数据
-        #k为full表名
+        # 在sstfile_map中查查找table_region_map中的sstfile文件并填充数据
+        # k为full表名
         for k in table_region_map:
             for region_id in table_region_map[k].all_region_map:
                 i = 0
                 for each_sstfile in table_region_map[k].all_region_map[region_id].sstfile_list:
-                    key = (each_sstfile.sst_node_id,each_sstfile.sst_name)
+                    key = (each_sstfile.sst_node_id, each_sstfile.sst_name)
                     region = table_region_map[k].all_region_map[region_id]
                     if key not in sstfile_map:
-                        #table_region_map[k].sstfiles_withoutsize_cnt += 1
-                        table_region_map[k].sstfiles_withoutsize_map[(each_sstfile.sst_node_id,each_sstfile.sst_name)] = each_sstfile
+                        # table_region_map[k].sstfiles_withoutsize_cnt += 1
+                        table_region_map[k].sstfiles_withoutsize_map[
+                            (each_sstfile.sst_node_id, each_sstfile.sst_name)] = each_sstfile
                         log.debug("table:%s,region:%d,node_id:%s,sstfilename:%s cannot find in sstfile_map" % (
-                            k,region_id,region.leader_store_node_id,each_sstfile.sst_name))
+                            k, region_id, region.leader_store_node_id, each_sstfile.sst_name))
                     else:
                         table_region_map[k].all_region_map[region_id].sstfile_list[i].sst_size = sstfile_map[key]
                     i += 1
@@ -469,11 +485,12 @@ class TiDBCluster:
             dbname = tabinfo.dbname
             tabname = tabinfo.tabname
             full_tabname = dbname + "." + tabname
-            log.info("tabname:%s sstfiles_withoutsize_count:%d" % (full_tabname,len(tabinfo.sstfiles_withoutsize_map)))
+            log.info("tabname:%s sstfiles_withoutsize_count:%d" % (full_tabname, len(tabinfo.sstfiles_withoutsize_map)))
             table_map[full_tabname] = {
                 "dbname": tabinfo.dbname,
                 "tabname": tabinfo.tabname,
-                "is_partition": "False" if tabinfo.is_partition() == False else "True-"+ str(len(tabinfo.partition_name_list)),
+                "is_partition": "False" if tabinfo.is_partition() == False else "True-" + str(
+                    len(tabinfo.partition_name_list)),
                 "index_count": tabinfo.get_index_cnt(),
                 "data_size": tabinfo.get_all_data_size(),
                 "index_size": tabinfo.get_all_index_size(),
@@ -506,20 +523,20 @@ class TiDBCluster:
         self._stores = stores
         return self._stores
 
-    #根据sstfile文件名去tikv上获取文件大小
-    #入参：[SSTFile]
-    def get_store_sstfiles_bysstfilelist(self,sstfiles):
+    # 根据sstfile文件名去tikv上获取文件大小
+    # 入参：[SSTFile]
+    def get_store_sstfiles_bysstfilelist(self, sstfiles):
         log.info("tikv-property method:get_store_sstfiles_bysstfilelist,sstfiles count:%d" % (len(sstfiles)))
         if len(self._sstfiles_list) != 0 and self._get_store_sstfiles_bystoreall_once is True:
             return self._sstfiles_list
-        sstfiles_node_map = {}  #key:node_id,value:sstfile_list
+        sstfiles_node_map = {}  # key:node_id,value:sstfile_list
         result_sstfiles = []
         for each_sstfile in sstfiles:
             if each_sstfile.sst_node_id in sstfiles_node_map:
                 sstfiles_node_map[each_sstfile.sst_node_id].append(each_sstfile)
             else:
                 sstfiles_node_map[each_sstfile.sst_node_id] = [each_sstfile]
-        for each_node_id,sstfiles in sstfiles_node_map.items():
+        for each_node_id, sstfiles in sstfiles_node_map.items():
             data_dir = ""
             host = ""
             for node in self.tidb_nodes:
@@ -529,9 +546,9 @@ class TiDBCluster:
             if data_dir == "":
                 log.error("cannot find node_id:%s sstfile's data dir" % (each_node_id))
                 continue
-            sstfile_path = os.path.join(data_dir,"db")
+            sstfile_path = os.path.join(data_dir, "db")
             cmd = '''tiup cluster exec %s --command='cd %s;for ssf in %s ;do stat -c "%s" $ssf ;done' -N %s ''' % (
-                self.cluster_name,sstfile_path," ".join([sstf.sst_name for sstf in sstfiles]),"%n:%s",host)
+                self.cluster_name, sstfile_path, " ".join([sstf.sst_name for sstf in sstfiles]), "%n:%s", host)
             result, recode = command_run(cmd, use_temp=True, timeout=600)
             log.debug(cmd)
             if recode != 0:
@@ -551,6 +568,7 @@ class TiDBCluster:
                     sstfile.sst_node_id = each_node_id
                     result_sstfiles.append(sstfile)
         return result_sstfiles
+
     # 获取所有tikv的sstfiles列表
     def get_store_sstfiles_bystoreall(self):
         log.info("tikv-property method:get_store_sstfiles_bystoreall")
@@ -622,14 +640,17 @@ class TiDBCluster:
                                 sstfile.sst_node_id = leader_node_id
                                 sstfiles.append(sstfile)
             if len(sstfiles) == 0:
-                log.error("region-properties:tabname:%s,region:%d's sstfile cannot found,cmd:%s" % (tabname, region_id, cmd))
+                log.error(
+                    "region-properties:tabname:%s,region:%d's sstfile cannot found,cmd:%s" % (tabname, region_id, cmd))
             table_region_map[full_tabname].all_region_map[region_id].sstfile_list = sstfiles
             region_queue.task_done()
-class  OutPutShow():
+
+
+class OutPutShow():
     def __init__(self):
-        self.title_list = [] #标题
-        self.data_list = [] #数据列表，二维列表
-        self.max_width_map = {} #记录每一列的每一个值的长度最大值，用于展现
+        self.title_list = []  # 标题
+        self.data_list = []  # 数据列表，二维列表
+        self.max_width_map = {}  # 记录每一列的每一个值的长度最大值，用于展现
         self._output_format = ""
 
     def _check(self):
@@ -644,7 +665,7 @@ class  OutPutShow():
                             self.max_width_map[i] = col_len
                     else:
                         self.max_width_map[i] = col_len
-                if not isinstance(each_row,list):
+                if not isinstance(each_row, list):
                     log.error("输出结果非二维列表")
                     return False
                 else:
@@ -661,24 +682,26 @@ class  OutPutShow():
         for i in range(len(self.max_width_map)):
             format_list.append("%-" + str(self.max_width_map[i] + 2) + "s")
         return "".join(format_list)
-    def show(self,with_title=True):
+
+    def show(self, with_title=True):
         if not self._check():
             log.error("output show check error")
             return
         log.info("output format:%s" % (self._format()))
-        #打印标题
+        # 打印标题
         if with_title:
             print(self._format() % tuple(self.title_list))
-        #打印数据
+        # 打印数据
         for each_line_list in self.data_list:
-            if isinstance(each_line_list,list):
+            if isinstance(each_line_list, list):
                 print(self._format() % tuple(each_line_list))
+
 
 if __name__ == "__main__":
     arg_parser = argparse.ArgumentParser(description='get table size')
-    arg_parser.add_argument('-c', '--cluster', type=str,required=True, help='tidb cluster name')
-    arg_parser.add_argument('-d', '--dbname', type=str, required=True,help='database name,* mains all databases')
-    arg_parser.add_argument('-t', '--tabnamelist', type=str,required=True,
+    arg_parser.add_argument('-c', '--cluster', type=str, required=True, help='tidb cluster name')
+    arg_parser.add_argument('-d', '--dbname', type=str, required=True, help='database name,* mains all databases')
+    arg_parser.add_argument('-t', '--tabnamelist', type=str, required=True,
                             help='table name,* mains all tables for database,muti table should like this "t1,t2,t3"')
     arg_parser.add_argument('-p', '--parallel', default=1, type=int, help='parallel')
     arg_parser.add_argument('--loglevel', default="info", type=str, help='critical,error,warn,info,debug')
@@ -704,14 +727,17 @@ if __name__ == "__main__":
     else:
         db_list = [dbname]
     print_output = OutPutShow()
-    print_output.title_list = ["DataBase", "TabName", "Partition", "IndexCnt", "DataSize","DataSizeF", "Indexsize","IndexsizeF","Tablesize","TablesizeF"]
+    print_output.title_list = ["DataBase", "TabName", "Partition", "IndexCnt", "DataSize", "DataSizeF", "Indexsize",
+                               "IndexsizeF", "Tablesize", "TablesizeF"]
     for each_db in db_list:
         tabname_list = [x.strip() for x in tabnamelist.split(",")]
         if len(tabname_list) == 1 and tabname_list[0] == "*":
             tabname_list = cluster.get_tablelist4db(each_db)
         tables_map = cluster.get_phy_tables_size(each_db, tabname_list, parallel)
         for full_tabname, val in sorted(tables_map.items(), reverse=True, key=lambda x: x[1]["table_size"]):
-            print_output.data_list.append([val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],printSize(val["data_size"]),
-                                      val["index_size"],printSize(val["index_size"]), val["table_size"],printSize(val["table_size"])])
+            print_output.data_list.append(
+                [val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],
+                 printSize(val["data_size"]),
+                 val["index_size"], printSize(val["index_size"]), val["table_size"], printSize(val["table_size"])])
 
     print_output.show()
