@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 # 判断python的版本
 isV3 = float(sys.version[:3]) > 2.7
@@ -123,7 +124,7 @@ class Store:
 # 整个表的大小不一定等于数据大小+索引大小，因为数据和索引存在共用regino的情况
 
 class TableInfo:
-    def __init__(self,cf_info = None):
+    def __init__(self):
         self.dbname = ""
         self.tabname = ""
         # 同一张表的索引和数据可能放到同一个region上，在求表总大小时候需要去掉
@@ -133,8 +134,10 @@ class TableInfo:
         self.index_region_map = {}
         self.all_region_map = {}  # 表和索引的region（包括重合部分),获取property时就用变量
         self.sstfiles_withoutsize_map = {}  # key:(node_id,sstname);value:SSTFile region property中存在，但是在实际物理文件中不存在的sstfile，去重
-        self.cf_info = cf_info
+        self.cf_info = None
 
+    def estimate_with_cf(self,cf_info):
+        self.cf_info = cf_info
     def is_partition(self):
         return len(self.partition_name_list) > 1
 
@@ -172,11 +175,20 @@ class TableInfo:
                 else:
                     log.error("no this predict_method:%s,return total_size without predict" % (predict_method))
         if self.cf_info is not None:
+            log.info("tabname:%s,tikv-ctl region properties dump only sst_file instead of writecf.sst_file and defaultcf.sst_file,estimate it" % (self.tabname))
             if self.cf_info.writecf_sstfiles_total_size != 0 and self.cf_info.defaultcf_sstfiles_total_size != 0:
+                log.info("prometheus metrics :%s,defaultcf_sstfiles_total_size:%d,writecf_sstfiles_total_size:%d" % ("tikv_engine_size_bytes",self.cf_info.defaultcf_sstfiles_total_size,self.cf_info.writecf_sstfiles_total_size))
                 #这里按照defaultcf的总大小的比例算，而不是defaultcf的总sstfile个数比例算
                 total_size = total_size * (self.cf_info.defaultcf_sstfiles_total_size + self.cf_info.writecf_sstfiles_total_size) / self.cf_info.writecf_sstfiles_total_size
             else:
-                log.error("tabname:%s cf_info writecf size =0  or  defaultcf =0" % (self.tabname))
+                #当sstfiles_total_size为0时，计划使用sstfiles_num进行预估
+                log.warning("tabname:%s cf_info writecf size=0 or defaultcf=0,do not estimate" % (self.tabname))
+                log.info("try to use tikv_engine_num_files_at_level estimate")
+                if self.cf_info.defaultcf_sstfiles_count != 0 and self.cf_info.writecf_sstfiles_count != 0:
+                    log.info("prometheus metrics :%s,defaultcf_sstfiles_count:%d,writecf_sstfiles_count:%d" % ("tikv_engine_size_bytes",self.cf_info.defaultcf_sstfiles_count,self.cf_info.writecf_sstfiles_count))
+                    total_size = total_size * (self.cf_info.defaultcf_sstfiles_count + self.cf_info.writecf_sstfiles_count) / self.cf_info.writecf_sstfiles_count
+                else:
+                    log.warning("cannot estimate!")
         return total_size
 
     def get_all_data_size(self):
@@ -324,7 +336,7 @@ class TiDBCluster:
         stores = self.get_all_stores()
         log.debug("tabname_list:%s" % (",".join(tabname_list)))
         for tabname in tabname_list:
-            table_info = TableInfo(self.get_cf_info())
+            table_info = TableInfo()
             table_info.dbname = dbname
             table_info.tabname = tabname
             for node in self.tidb_nodes:
@@ -492,6 +504,7 @@ class TiDBCluster:
                     i += 1
         # table_region_map中已经有完整的sstfile相关数据
         for tabinfo in table_region_map.values():
+            tabinfo.estimate_with_cf(self.get_cf_info())
             dbname = tabinfo.dbname
             tabname = tabinfo.tabname
             full_tabname = dbname + "." + tabname
@@ -634,13 +647,14 @@ class TiDBCluster:
             result, recode = command_run(cmd)
             # cannot find region when region split or region merge
             if recode != 0:
-                log.warn("cmd:%s,message:%s" % (cmd, result))
+                log.warning("cmd:%s,message:%s" % (cmd, result))
             else:
                 for each_line in result.splitlines():
                     if each_line.find("sst_files:") > -1:
                         #如果tikv-ctl region properties的结果中包含sst_files开头的说明打印的结果只包含了writecf的sst文件
                         if each_line.find("sst_files:") == 0 and not self.property_only_writecf_mode:
                             self.property_only_writecf_mode = True
+                            log.info("property_only_writecf_mode:%s" % (self.property_only_writecf_mode))
                         each_line_fields = each_line.split(":")
                         each_line_fields_len = len(each_line_fields)
                         if each_line_fields_len == 2 and each_line_fields[1] != "":
@@ -708,14 +722,16 @@ class CFInfo(object):
         self.writecf_sstfiles_total_size = 0
         self._get_sstfiles_info()
     def _get_sstfiles_info(self):
-        tikv_engine_num_files_at_level_url = 'http://%s/api/v1/query?query=sum%28tikv_engine_num_files_at_level%29by%28cf%29' % (self.prometheus_node_id)
+        tikv_engine_num_files_at_level_url = 'http://%s/api/v1/query?query=sum%%28tikv_engine_num_files_at_level%%29by%%28cf%%29' % (self.prometheus_node_id)
+        log.debug("tikv_engine_num_files_at_level_url:%s" % (tikv_engine_num_files_at_level_url))
         num_files_data,err = get_jsondata_from_url(tikv_engine_num_files_at_level_url)
         if err is not None:
-            log.error(err)
+            log.error("err:%s,message:%s" % (err,tikv_engine_num_files_at_level_url))
         else:
             try:
+                #注意在6.x版本中和5.x版本中对于这里的解析不一样，6.x:[metric][type],而5.x:[metric][cf],因只有5.x有问题，因此这里只考虑5.x场景
                 for each_item in num_files_data["data"]["result"]:
-                    cf_type = each_item["metric"]["type"]
+                    cf_type = each_item["metric"]["cf"]
                     cf_nums_str = each_item["value"][1]
                     if cf_type == "write":
                         self.writecf_sstfiles_count = int(cf_nums_str)
@@ -723,7 +739,9 @@ class CFInfo(object):
                         self.defaultcf_sstfiles_count = int(cf_nums_str)
             except Exception as e:
                 log.error(e)
-        tikv_engine_size_bytes_url = 'http://%s/api/v1/query?query=sum%28tikv_engine_size_bytes%29by%28cf%29' % (self.prometheus_node_id)
+        #5.x:type = 6.x:cf
+        tikv_engine_size_bytes_url = 'http://%s/api/v1/query?query=sum%%28tikv_engine_size_bytes{db="kv"}%%29by%%28type%%29' % (self.prometheus_node_id)
+        log.debug("tikv_engine_size_bytes_url:%s" % (tikv_engine_size_bytes_url))
         tikv_engine_size_data,err = get_jsondata_from_url(tikv_engine_size_bytes_url)
         if err is not None:
             log.error(err)
@@ -738,7 +756,9 @@ class CFInfo(object):
                         self.defaultcf_sstfiles_total_size = int(cf_size_str)
             except Exception as e:
                 log.error(e)
-
+        log.debug("defaultcf_sstfiles_count:%s,writecf_sstfiles_count:%s,defaultcf_sstfiles_total_size:%s,writecf_sstfiles_total_size:%s" % (
+            self.defaultcf_sstfiles_count,self.writecf_sstfiles_count,self.defaultcf_sstfiles_total_size,self.writecf_sstfiles_total_size
+        ))
 #return:json data,error
 def get_jsondata_from_url(url):
     if url == "":
@@ -750,7 +770,7 @@ def get_jsondata_from_url(url):
     rep_data = rep.read()
     if rep_data == "":
         return "","response from %s is none" % (url)
-    return json.loads(rep_data)
+    return json.loads(rep_data),None
 
 class OutPutShow():
     def __init__(self):
@@ -816,7 +836,7 @@ if __name__ == "__main__":
     if loglevel == "info":
         level = log.INFO
     elif loglevel == "warn":
-        level = log.WARN
+        level = log.warning
     elif loglevel == "debug":
         level = log.DEBUG
     elif loglevel == "error":
@@ -826,6 +846,7 @@ if __name__ == "__main__":
     log_filename = sys.argv[0] + ".log"
     log.basicConfig(filename=log_filename, filemode='a', level=level,
                     format='%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
+    start_time = time.time()
     db_list = []
     cluster = TiDBCluster(cname)
     if dbname == "*":
@@ -847,3 +868,4 @@ if __name__ == "__main__":
                  val["index_size"], format_size(val["index_size"]), val["table_size"], format_size(val["table_size"])])
 
     print_output.show()
+    log.info("Complate,time spend:%d seconds" % (time.time() - start_time))
