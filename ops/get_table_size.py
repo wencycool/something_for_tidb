@@ -668,16 +668,17 @@ class TiDBCluster:
                 break
         return CFInfo(node_id)
 
-
-
+def singleton(cls):
+    def wrapper(*args,**kwargs):
+        if not hasattr(cls,"__single_instance"):
+            setattr(cls,"__single_instance",cls(*args,**kwargs))
+            wrapper.clean = lambda:delattr(cls,"__single_instance")
+        return getattr(cls,"__single_instance")
+    return wrapper
 #从writecf、defaucf的sstfile个数和大小信息
 #单例模式
+@singleton
 class CFInfo(object):
-    _instance = {}
-    def __new__(cls,prometheus_node_id):
-        if prometheus_node_id not in cls._instance:
-            cls._instance[prometheus_node_id] = super().__new__(cls,prometheus_node_id)
-        return cls._instance[prometheus_node_id]
     def __init__(self,prometheus_node_id):
         self.prometheus_node_id = prometheus_node_id
         self.defaultcf_sstfiles_count = 0
