@@ -189,7 +189,7 @@ class TableInfo:
                     total_size = total_size * (self.cf_info.defaultcf_sstfiles_count + self.cf_info.writecf_sstfiles_count) / self.cf_info.writecf_sstfiles_count
                 else:
                     log.warning("cannot estimate!")
-        return total_size
+        return int(total_size)
 
     def get_all_data_size(self):
         return self._get_xx_size(self.data_region_map)
