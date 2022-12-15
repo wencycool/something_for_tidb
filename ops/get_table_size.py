@@ -228,6 +228,7 @@ class TiDBCluster:
         self.cluster_version = ""
         self.tidb_nodes = []
         self._get_clusterinfo()
+        self.ctl_version = self.get_ctl_version()
         self._check_env()
         self._sstfiles_list = []
         self._get_store_sstfiles_bystoreall_once = False  # 是否调用过get_store_sstfiles_bystoreall方法，如果调用过则说明_sstfiles_list包含所有的sstfile文件信息，不需要重复执行
@@ -237,8 +238,6 @@ class TiDBCluster:
         #新版本情况：https://github.com/tikv/tikv/blob/790c744e582d4fddfab2b884b40d7d5af14a47e1/src/server/debug.rs#L918
         #老版本情况：https://github.com/tikv/tikv/blob/09a7e1efb40386d804f42ef6ba593f6b85924973/src/server/debug.rs#L918
         self.property_only_writecf_mode = False #目前根据region的property结果来判断，todo 最好按照tidb的版本来判断
-        self._ctl_version = ""
-
     def _get_clusterinfo(self):
         log.debug("TiDBCluster._get_clusterinfo")
         display_command = "tiup cluster display %s" % (self.cluster_name)
@@ -683,10 +682,7 @@ class TiDBCluster:
         return CFInfo(node_id)
 
     #当前的cluster的version并不一定和ctl的版本一致，因此查找最接近当前cluster version版本的已安装的ctl版本
-    @property
-    def ctl_version(self):
-        if self._ctl_version != "":
-            return self._ctl_version
+    def get_ctl_version(self):
         version = ""
         result,recode = command_run("tiup list --installed --verbose")
         if recode != 0:
@@ -701,7 +697,6 @@ class TiDBCluster:
                     if version >= self.cluster_version:break
         if version == "":
             raise Exception("cannot find ctl version,mybe not installed")
-        self._ctl_version = version
         return version
 
 
