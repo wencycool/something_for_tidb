@@ -172,8 +172,11 @@ class TableInfo:
                 else:
                     log.error("no this predict_method:%s,return total_size without predict" % (predict_method))
         if self.cf_info is not None:
-            #这里按照defaultcf的总大小的比例算，而不是defaultcf的总sstfile个数比例算
-            total_size = total_size * (self.cf_info.defaultcf_sstfiles_total_size + self.cf_info.writecf_sstfiles_total_size) / self.cf_info.writecf_sstfiles_total_size
+            if self.cf_info.writecf_sstfiles_total_size != 0 and self.cf_info.defaultcf_sstfiles_total_size != 0:
+                #这里按照defaultcf的总大小的比例算，而不是defaultcf的总sstfile个数比例算
+                total_size = total_size * (self.cf_info.defaultcf_sstfiles_total_size + self.cf_info.writecf_sstfiles_total_size) / self.cf_info.writecf_sstfiles_total_size
+            else:
+                log.error("tabname:%s cf_info writecf size =0  or  defaultcf =0" % (self.tabname))
         return total_size
 
     def get_all_data_size(self):
