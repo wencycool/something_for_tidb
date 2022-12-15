@@ -258,7 +258,7 @@ class TiDBCluster:
                 self.tidb_nodes.append(node)
 
     def _check_env(self):
-        cmd = "tiup ctl:%s tikv --version" % (self.cluster_version)
+        cmd = "tiup ctl:%s tikv --version" % (self.ctl_version)
         log.debug("TiDBCluster._check_env,cmd:%s" % (cmd))
         result, recode = command_run(cmd)
         if recode != 0:
@@ -630,7 +630,7 @@ class TiDBCluster:
             leader_node_id = region.leader_store_node_id
             sstfiles = []
             cmd = "tiup ctl:%s tikv --host %s region-properties -r %d" % (
-                self.cluster_version, leader_node_id, region_id)
+                self.ctl_version, leader_node_id, region_id)
             result, recode = command_run(cmd)
             # cannot find region when region split or region merge
             if recode != 0:
@@ -667,6 +667,27 @@ class TiDBCluster:
                 node_id = nd.id
                 break
         return CFInfo(node_id)
+
+    #当前的cluster的version并不一定和ctl的版本一致，因此查找最接近当前cluster version版本的已安装的ctl版本
+    @property
+    def ctl_version(self):
+        version = ""
+        result,recode = command_run("tiup list --installed --verbose")
+        if recode != 0:
+            raise Exception(result)
+        for each_line in result.splitlines():
+            each_line_fields = each_line.split(None,4)
+            if len(each_line_fields) == 5 and each_line_fields[0] == "ctl":
+                version_list = each_line_fields[2].split(",")
+                version_list.sort()
+                for each_version in version_list:
+                    version = each_version
+                    if version >= self.cluster_version:break
+        if version == "":
+            raise Exception("cannot find ctl version,mybe not installed")
+        return version
+
+
 
 def singleton(cls):
     def wrapper(*args,**kwargs):
