@@ -676,7 +676,7 @@ class CFInfo(object):
     _instance = {}
     def __new__(cls,prometheus_node_id):
         if prometheus_node_id not in cls._instance:
-            cls._instance[prometheus_node_id] = super().__new__(cls)
+            cls._instance[prometheus_node_id] = super().__new__(cls,prometheus_node_id)
         return cls._instance[prometheus_node_id]
     def __init__(self,prometheus_node_id):
         self.prometheus_node_id = prometheus_node_id
