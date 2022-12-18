@@ -8,6 +8,7 @@ import argparse
 import json
 import logging as log
 import os.path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -98,6 +99,62 @@ def check_env():
         raise Exception("cannot find tiup:%s" % (result))
     return True
 
+#return:json data,error
+def get_jsondata_from_url(url):
+    if url == "":
+        return "","url is none"
+    try:
+        rep = request.urlopen(url)
+    except Exception as e:
+        return "",str(e)
+    rep_data = rep.read()
+    if rep_data == "":
+        return "","response from %s is none" % (url)
+    return json.loads(rep_data),None
+
+#parms:
+#sqlite3_fname 数据库的路径
+#cluster_name 集群名称
+#data_list，需要加载的数据列表，包含多行记录，二维列表
+def load2sqlite3(sqlite3_fname,cluster_name,data_list):
+    try:
+        conn = sqlite3.connect(sqlite3_fname)
+        cur = conn.cursor()
+        create_table_ddl = '''
+        create table if not exists table_size_info (
+        insert_time timestamp,
+        cname varchar(30),
+        dbname varchar(30),
+        tabname varchar(255),
+        ispartition varchar(20),
+        index_count int,
+        data_size bigint,
+        data_size_format varchar(50),
+        index_size bigint,
+        index_size_format varchar(50), 
+        table_size bigint,
+        table_size_format varchar(500)
+        );
+        '''
+        cur.execute(create_table_ddl)
+        create_index_ddl = '''
+        create index if not exists idx1 on table_size_info (cname,dbname,tabname,insert_time)
+        '''
+        cur.execute(create_index_ddl)
+        insert_data_rows = []
+        now = cur.execute("select datetime('now','localtime')").fetchone()[0]
+        for each_row in data_list:
+            #each_row只包含：dbname,tabname,ispartition,index_count,data_size,data_size_format,index_size,index_size_format,table_size,table_size_format
+            row = [now,cluster_name]
+            row.extend(each_row)
+            insert_data_rows.append(tuple(row))
+        cur.executemany('''insert into table_size_info values (?,?,?,?,?,?,?,?,?,?,?,?)''',insert_data_rows)
+        cur.close()
+        conn.commit()
+    except Exception as e:
+        log.error("load data error,message:%s" % (e))
+    finally:
+        conn.close()
 
 class Node:
     def __init__(self):
@@ -144,7 +201,7 @@ class TableInfo:
     def get_index_cnt(self):
         if len(self.partition_name_list) == 0:
             return 0
-        return len(self.index_name_list) / len(self.partition_name_list)
+        return int(len(self.index_name_list) / len(self.partition_name_list))
 
     # predict=True的情况下会将sstfile为空的region进行预估
     # 预估提供两种方案：1、对于没有size的sst按照每一个8MB方式填充；2、计算出总的sst文件的大小算出每一个sst文件的平均值，利用平均值填充没有size的sst
@@ -757,18 +814,8 @@ class CFInfo(object):
         log.debug("defaultcf_sstfiles_count:%s,writecf_sstfiles_count:%s,defaultcf_sstfiles_total_size:%s,writecf_sstfiles_total_size:%s" % (
             self.defaultcf_sstfiles_count,self.writecf_sstfiles_count,self.defaultcf_sstfiles_total_size,self.writecf_sstfiles_total_size
         ))
-#return:json data,error
-def get_jsondata_from_url(url):
-    if url == "":
-        return "","url is none"
-    try:
-        rep = request.urlopen(url)
-    except Exception as e:
-        return "",str(e)
-    rep_data = rep.read()
-    if rep_data == "":
-        return "","response from %s is none" % (url)
-    return json.loads(rep_data),None
+
+
 
 class OutPutShow():
     def __init__(self):
@@ -828,9 +875,10 @@ if __name__ == "__main__":
     arg_parser.add_argument('-t', '--tabnamelist', type=str, required=True,
                             help='table name,* mains all tables for database,muti table should like this "t1,t2,t3"')
     arg_parser.add_argument('-p', '--parallel', default=1, type=int, help='parallel')
+    arg_parser.add_argument('-f','--sqlite3dbfile',type=str,help='load data into sqlite3')
     arg_parser.add_argument('--loglevel', default="info", type=str, help='critical,error,warn,info,debug')
     args = arg_parser.parse_args()
-    cname, dbname, tabnamelist, parallel, loglevel, level = args.cluster, args.dbname, args.tabnamelist, args.parallel, args.loglevel, log.INFO
+    cname, dbname, tabnamelist, parallel, loglevel, level,sqlite3dbfile = args.cluster, args.dbname, args.tabnamelist, args.parallel, args.loglevel, log.INFO,args.sqlite3dbfile
     if loglevel == "info":
         level = log.INFO
     elif loglevel == "warn":
@@ -864,6 +912,7 @@ if __name__ == "__main__":
                 [val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],
                  format_size(val["data_size"]),
                  val["index_size"], format_size(val["index_size"]), val["table_size"], format_size(val["table_size"])])
-
+    if sqlite3dbfile != "":
+        load2sqlite3(sqlite3dbfile,cname,print_output.data_list)
     print_output.show()
     log.info("Complate,time spend:%d seconds" % (time.time() - start_time))

@@ -2,7 +2,7 @@
 <module type="WEB_MODULE" version="4">
   <component name="FacetManager">
     <facet type="Python" name="Python facet">
-      <configuration sdkName="Python 3.7 (something_for_tidb) (4)" />
+      <configuration sdkName="Python 3.11 (something_for_tidb) (5)" />
     </facet>
   </component>
   <component name="Go" enabled="true" />
@@ -12,6 +12,6 @@
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
-    <orderEntry type="library" name="Python 3.7 (something_for_tidb) (4) interpreter library" level="application" />
+    <orderEntry type="library" name="Python 3.11 (something_for_tidb) (5) interpreter library" level="application" />
   </component>
 </module>
