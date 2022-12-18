@@ -1,5 +1,9 @@
 #!/usr/bin/python
 # encoding=utf8
+#放在tiup服务器上，使用tidb用户执行
+#python get_table_size.py -c <cluster_name> -d <dbname> -t <table_name> --paralle=5
+#可以放在crontab中固定间隔调用，获取表的历史大小信息，方便查看趋势,比如每周日执行一次，放到crontab中则：
+#0 0 * * 0 . /home/tidb/.bash_profile;python <path>/get_table_size.py -c <cluster_name> -d <dbname> -t <table_name> --paralle=5 -f "/home/tidb/xxx/table_size.db"
 # 必须开启如下配置文件参数否则计算可能不准（默认情况下即开启）
 # rocksdb.defaultcf.enable-compaction-guard=true
 # rocksdb.writecf.enable-compaction-guard=true
