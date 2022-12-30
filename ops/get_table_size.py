@@ -151,10 +151,9 @@ def load2sqlite3(sqlite3_fname,cluster_name,data_list):
         cur.executemany('''insert into table_size_info values (?,?,?,?,?,?,?,?,?,?,?,?)''',insert_data_rows)
         cur.close()
         conn.commit()
+        conn.close()
     except Exception as e:
         log.error("load data error,message:%s" % (e))
-    finally:
-        conn.close()
 
 class Node:
     def __init__(self):
@@ -912,7 +911,8 @@ if __name__ == "__main__":
                 [val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],
                  format_size(val["data_size"]),
                  val["index_size"], format_size(val["index_size"]), val["table_size"], format_size(val["table_size"])])
-    if sqlite3dbfile != "":
+    #python3需要用!=""来处理，python2需要用is not None处理
+    if sqlite3dbfile != "" and sqlite3dbfile is not None:
         load2sqlite3(sqlite3dbfile,cname,print_output.data_list)
     print_output.show()
     log.info("Complate,time spend:%d seconds" % (time.time() - start_time))
