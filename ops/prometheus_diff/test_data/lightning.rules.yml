@@ -1,0 +1,14 @@
+groups:
+- name: alert.rules
+  rules:
+  - alert: Lightning_import_failure_tables_count
+    expr: sum ( lightning_tables{result="failure"} ) > 0
+    for: 1m
+    labels:
+      env: tidb-test
+      level: emergency
+      expr:  sum ( lightning_tables{result="failure"} ) > 0
+    annotations:
+      description: 'cluster: tidb-test, instance: {{ $labels.instance }}, values:{{ $value }}'
+      value: '{{ $value }}'
+      summary: Lightning failed to import a table
