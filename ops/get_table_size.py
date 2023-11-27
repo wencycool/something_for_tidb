@@ -1,9 +1,9 @@
 #!/usr/bin/python
 # encoding=utf8
-#放在tiup服务器上，使用tidb用户执行
-#python get_table_size.py -c <cluster_name> -d <dbname> -t <table_name> --paralle=5
-#可以放在crontab中固定间隔调用，获取表的历史大小信息，方便查看趋势,比如每周日执行一次，放到crontab中则：
-#0 0 * * 0 . /home/tidb/.bash_profile;python <path>/get_table_size.py -c <cluster_name> -d <dbname> -t <table_name> --paralle=5 -f "/home/tidb/xxx/table_size.db"
+# 放在tiup服务器上，使用tidb用户执行
+# python get_table_size.py -c <cluster_name> -d <dbname> -t <table_name> --paralle=5
+# 可以放在crontab中固定间隔调用，获取表的历史大小信息，方便查看趋势,比如每周日执行一次，放到crontab中则：
+# 0 0 * * 0 . /home/tidb/.bash_profile;python <path>/get_table_size.py -c <cluster_name> -d <dbname> -t <table_name> --paralle=5 -f "/home/tidb/xxx/table_size.db"
 # 必须开启如下配置文件参数否则计算可能不准（默认情况下即开启）
 # rocksdb.defaultcf.enable-compaction-guard=true
 # rocksdb.writecf.enable-compaction-guard=true
@@ -103,24 +103,26 @@ def check_env():
         raise Exception("cannot find tiup:%s" % (result))
     return True
 
-#return:json data,error
+
+# return:json data,error
 def get_jsondata_from_url(url):
     if url == "":
-        return "","url is none"
+        return "", "url is none"
     try:
         rep = request.urlopen(url)
     except Exception as e:
-        return "",str(e)
+        return "", str(e)
     rep_data = rep.read()
     if rep_data == "":
-        return "","response from %s is none" % (url)
-    return json.loads(rep_data),None
+        return "", "response from %s is none" % (url)
+    return json.loads(rep_data), None
 
-#parms:
-#sqlite3_fname 数据库的路径
-#cluster_name 集群名称
-#data_list，需要加载的数据列表，包含多行记录，二维列表
-def load2sqlite3(sqlite3_fname,cluster_name,data_list):
+
+# parms:
+# sqlite3_fname 数据库的路径
+# cluster_name 集群名称
+# data_list，需要加载的数据列表，包含多行记录，二维列表
+def load2sqlite3(sqlite3_fname, cluster_name, data_list):
     try:
         conn = sqlite3.connect(sqlite3_fname)
         cur = conn.cursor()
@@ -148,16 +150,17 @@ def load2sqlite3(sqlite3_fname,cluster_name,data_list):
         insert_data_rows = []
         now = cur.execute("select datetime('now','localtime')").fetchone()[0]
         for each_row in data_list:
-            #each_row只包含：dbname,tabname,ispartition,index_count,data_size,data_size_format,index_size,index_size_format,table_size,table_size_format
-            row = [now,cluster_name]
+            # each_row只包含：dbname,tabname,ispartition,index_count,data_size,data_size_format,index_size,index_size_format,table_size,table_size_format
+            row = [now, cluster_name]
             row.extend(each_row)
             insert_data_rows.append(tuple(row))
-        cur.executemany('''insert into table_size_info values (?,?,?,?,?,?,?,?,?,?,?,?)''',insert_data_rows)
+        cur.executemany('''insert into table_size_info values (?,?,?,?,?,?,?,?,?,?,?,?)''', insert_data_rows)
         cur.close()
         conn.commit()
         conn.close()
     except Exception as e:
         log.error("load data error,message:%s" % (e))
+
 
 class Node:
     def __init__(self):
@@ -196,8 +199,9 @@ class TableInfo:
         self.sstfiles_withoutsize_map = {}  # key:(node_id,sstname);value:SSTFile region property中存在，但是在实际物理文件中不存在的sstfile，去重
         self.cf_info = None
 
-    def estimate_with_cf(self,cf_info):
+    def estimate_with_cf(self, cf_info):
         self.cf_info = cf_info
+
     def is_partition(self):
         return len(self.partition_name_list) > 1
 
@@ -208,7 +212,7 @@ class TableInfo:
 
     # predict=True的情况下会将sstfile为空的region进行预估
     # 预估提供两种方案：1、对于没有size的sst按照每一个8MB方式填充；2、计算出总的sst文件的大小算出每一个sst文件的平均值，利用平均值填充没有size的sst
-    #prams:cf_info，如果当前sst文件只计算了writecf的，那么需要对defaultcf的sst文件进行预估
+    # prams:cf_info，如果当前sst文件只计算了writecf的，那么需要对defaultcf的sst文件进行预估
     def _get_xx_size(self, region_map, predict=True):
         # predict_method-> 1: sstfile_size=8MB;2: sstfile_size = avg(sstfiles_size)
         predict_method = 2
@@ -231,22 +235,30 @@ class TableInfo:
                     total_size += sstfiles_withoutsize_cnt * (8 << 20)
                 # todo 如果算平均时候sstfile全部去重来计算，total_sstfiles_cnt是表中所有的region property出来的sst去重,sstfiles_withoutsize_cnt是去重后的没有大小的sst个数，但是全部按照去重做可能精准度不如全部都不去重的算
                 elif predict_method == 2:
-                    total_size =  total_size * total_sstfiles_cnt / sstfiles_withsize_cnt
+                    total_size = total_size * total_sstfiles_cnt / sstfiles_withsize_cnt
                 else:
                     log.error("no this predict_method:%s,return total_size without predict" % (predict_method))
         if self.cf_info is not None:
-            log.info("tabname:%s,tikv-ctl region properties dump only sst_file instead of writecf.sst_file and defaultcf.sst_file,estimate it" % (self.tabname))
+            log.info(
+                "tabname:%s,tikv-ctl region properties dump only sst_file instead of writecf.sst_file and defaultcf.sst_file,estimate it" % (
+                    self.tabname))
             if self.cf_info.writecf_sstfiles_total_size != 0 and self.cf_info.defaultcf_sstfiles_total_size != 0:
-                log.info("prometheus metrics :%s,defaultcf_sstfiles_total_size:%d,writecf_sstfiles_total_size:%d" % ("tikv_engine_size_bytes",self.cf_info.defaultcf_sstfiles_total_size,self.cf_info.writecf_sstfiles_total_size))
-                #这里按照defaultcf的总大小的比例算，而不是defaultcf的总sstfile个数比例算
-                total_size = total_size * (self.cf_info.defaultcf_sstfiles_total_size + self.cf_info.writecf_sstfiles_total_size) / self.cf_info.writecf_sstfiles_total_size
+                log.info("prometheus metrics :%s,defaultcf_sstfiles_total_size:%d,writecf_sstfiles_total_size:%d" % (
+                "tikv_engine_size_bytes", self.cf_info.defaultcf_sstfiles_total_size,
+                self.cf_info.writecf_sstfiles_total_size))
+                # 这里按照defaultcf的总大小的比例算，而不是defaultcf的总sstfile个数比例算
+                total_size = total_size * (
+                            self.cf_info.defaultcf_sstfiles_total_size + self.cf_info.writecf_sstfiles_total_size) / self.cf_info.writecf_sstfiles_total_size
             else:
-                #当sstfiles_total_size为0时，计划使用sstfiles_num进行预估
+                # 当sstfiles_total_size为0时，计划使用sstfiles_num进行预估
                 log.warning("tabname:%s cf_info writecf size=0 or defaultcf=0,do not estimate" % (self.tabname))
                 log.info("try to use tikv_engine_num_files_at_level estimate")
                 if self.cf_info.defaultcf_sstfiles_count != 0 and self.cf_info.writecf_sstfiles_count != 0:
-                    log.info("prometheus metrics :%s,defaultcf_sstfiles_count:%d,writecf_sstfiles_count:%d" % ("tikv_engine_size_bytes",self.cf_info.defaultcf_sstfiles_count,self.cf_info.writecf_sstfiles_count))
-                    total_size = total_size * (self.cf_info.defaultcf_sstfiles_count + self.cf_info.writecf_sstfiles_count) / self.cf_info.writecf_sstfiles_count
+                    log.info("prometheus metrics :%s,defaultcf_sstfiles_count:%d,writecf_sstfiles_count:%d" % (
+                    "tikv_engine_size_bytes", self.cf_info.defaultcf_sstfiles_count,
+                    self.cf_info.writecf_sstfiles_count))
+                    total_size = total_size * (
+                                self.cf_info.defaultcf_sstfiles_count + self.cf_info.writecf_sstfiles_count) / self.cf_info.writecf_sstfiles_count
                 else:
                     log.warning("cannot estimate!")
         return int(total_size)
@@ -270,6 +282,14 @@ class Region:
         self.leader_store_node_id = ""
         # 通过property查询，为空说明未查询到
         self.sstfile_list = []  # SSTFile
+        self.Peers = []
+
+
+class Peer:
+    def __init__(self):
+        self.region_id = 0
+        self.peer_id = 0
+        self.store_id = 0
 
 
 class SSTFile:
@@ -294,10 +314,11 @@ class TiDBCluster:
         self._get_store_sstfiles_bystoreall_once = False  # 是否调用过get_store_sstfiles_bystoreall方法，如果调用过则说明_sstfiles_list包含所有的sstfile文件信息，不需要重复执行
         self._table_region_map = {}  # 所有表的region信息
         self._stores = []  # stores列表
-        #通过region properties打印的信息中包含sst_files（不包含writecf.sst_files和defaultcf.sst_files），该值在源码中只包含了writecf的大小，需要估算defaultcf的大小
-        #新版本情况：https://github.com/tikv/tikv/blob/790c744e582d4fddfab2b884b40d7d5af14a47e1/src/server/debug.rs#L918
-        #老版本情况：https://github.com/tikv/tikv/blob/09a7e1efb40386d804f42ef6ba593f6b85924973/src/server/debug.rs#L918
-        self.property_only_writecf_mode = False #目前根据region的property结果来判断，todo 最好按照tidb的版本来判断
+        # 通过region properties打印的信息中包含sst_files（不包含writecf.sst_files和defaultcf.sst_files），该值在源码中只包含了writecf的大小，需要估算defaultcf的大小
+        # 新版本情况：https://github.com/tikv/tikv/blob/790c744e582d4fddfab2b884b40d7d5af14a47e1/src/server/debug.rs#L918
+        # 老版本情况：https://github.com/tikv/tikv/blob/09a7e1efb40386d804f42ef6ba593f6b85924973/src/server/debug.rs#L918
+        self.property_only_writecf_mode = False  # 目前根据region的property结果来判断，todo 最好按照tidb的版本来判断
+
     def _get_clusterinfo(self):
         log.debug("TiDBCluster._get_clusterinfo")
         display_command = "tiup cluster display %s" % (self.cluster_name)
@@ -437,6 +458,15 @@ class TiDBCluster:
                         region.region_id = each_region["region_id"]
                         region.leader_id = each_region["leader"]["id"]
                         region.leader_store_id = each_region["leader"]["store_id"]
+                        for each_peer in each_region["peers"]:
+                            # 避免引入tiflash
+                            if "role" in each_peer and each_peer["role"] == 1:
+                                continue
+                            peer = Peer()
+                            peer.peer_id = each_peer["id"]
+                            peer.store_id = each_peer["store_id"]
+                            peer.region_id = region.region_id
+                            region.Peers.append(peer)
                         for store in stores:
                             if store.id == region.leader_store_id:
                                 region.leader_store_node_id = store.address
@@ -710,7 +740,7 @@ class TiDBCluster:
             else:
                 for each_line in result.splitlines():
                     if each_line.find("sst_files:") > -1:
-                        #如果tikv-ctl region properties的结果中包含sst_files开头的说明打印的结果只包含了writecf的sst文件
+                        # 如果tikv-ctl region properties的结果中包含sst_files开头的说明打印的结果只包含了writecf的sst文件
                         if each_line.find("sst_files:") == 0 and not self.property_only_writecf_mode:
                             self.property_only_writecf_mode = True
                             log.info("property_only_writecf_mode:%s" % (self.property_only_writecf_mode))
@@ -741,53 +771,57 @@ class TiDBCluster:
                 break
         return CFInfo(node_id)
 
-    #当前的cluster的version并不一定和ctl的版本一致，因此查找最接近当前cluster version版本的已安装的ctl版本
+    # 当前的cluster的version并不一定和ctl的版本一致，因此查找最接近当前cluster version版本的已安装的ctl版本
     def get_ctl_version(self):
         version = ""
-        result,recode = command_run("tiup list --installed --verbose")
+        result, recode = command_run("tiup list --installed --verbose")
         if recode != 0:
             raise Exception(result)
         for each_line in result.splitlines():
-            each_line_fields = each_line.split(None,4)
+            each_line_fields = each_line.split(None, 4)
             if len(each_line_fields) == 5 and each_line_fields[0] == "ctl":
                 version_list = each_line_fields[2].split(",")
                 version_list.sort()
                 for each_version in version_list:
                     version = each_version
-                    if version >= self.cluster_version:break
+                    if version >= self.cluster_version: break
         if version == "":
             raise Exception("cannot find ctl version,mybe not installed")
         return version
 
 
-
 def singleton(cls):
-    def wrapper(*args,**kwargs):
-        if not hasattr(cls,"__single_instance"):
-            setattr(cls,"__single_instance",cls(*args,**kwargs))
-            wrapper.clean = lambda:delattr(cls,"__single_instance")
-        return getattr(cls,"__single_instance")
+    def wrapper(*args, **kwargs):
+        if not hasattr(cls, "__single_instance"):
+            setattr(cls, "__single_instance", cls(*args, **kwargs))
+            wrapper.clean = lambda: delattr(cls, "__single_instance")
+        return getattr(cls, "__single_instance")
+
     return wrapper
-#从writecf、defaucf的sstfile个数和大小信息
-#单例模式
+
+
+# 从writecf、defaucf的sstfile个数和大小信息
+# 单例模式
 @singleton
 class CFInfo(object):
-    def __init__(self,prometheus_node_id):
+    def __init__(self, prometheus_node_id):
         self.prometheus_node_id = prometheus_node_id
         self.defaultcf_sstfiles_count = 0
         self.defaultcf_sstfiles_total_size = 0
         self.writecf_sstfiles_count = 0
         self.writecf_sstfiles_total_size = 0
         self._get_sstfiles_info()
+
     def _get_sstfiles_info(self):
-        tikv_engine_num_files_at_level_url = 'http://%s/api/v1/query?query=sum%%28tikv_engine_num_files_at_level%%29by%%28cf%%29' % (self.prometheus_node_id)
+        tikv_engine_num_files_at_level_url = 'http://%s/api/v1/query?query=sum%%28tikv_engine_num_files_at_level%%29by%%28cf%%29' % (
+            self.prometheus_node_id)
         log.debug("tikv_engine_num_files_at_level_url:%s" % (tikv_engine_num_files_at_level_url))
-        num_files_data,err = get_jsondata_from_url(tikv_engine_num_files_at_level_url)
+        num_files_data, err = get_jsondata_from_url(tikv_engine_num_files_at_level_url)
         if err is not None:
-            log.error("err:%s,message:%s" % (err,tikv_engine_num_files_at_level_url))
+            log.error("err:%s,message:%s" % (err, tikv_engine_num_files_at_level_url))
         else:
             try:
-                #注意在6.x版本中和5.x版本中对于这里的解析不一样，6.x:[metric][type],而5.x:[metric][cf],因只有5.x有问题，因此这里只考虑5.x场景
+                # 注意在6.x版本中和5.x版本中对于这里的解析不一样，6.x:[metric][type],而5.x:[metric][cf],因只有5.x有问题，因此这里只考虑5.x场景
                 for each_item in num_files_data["data"]["result"]:
                     cf_type = each_item["metric"]["cf"]
                     cf_nums_str = each_item["value"][1]
@@ -797,10 +831,11 @@ class CFInfo(object):
                         self.defaultcf_sstfiles_count = int(cf_nums_str)
             except Exception as e:
                 log.error(e)
-        #5.x:type = 6.x:cf
-        tikv_engine_size_bytes_url = 'http://%s/api/v1/query?query=sum%%28tikv_engine_size_bytes{db="kv"}%%29by%%28type%%29' % (self.prometheus_node_id)
+        # 5.x:type = 6.x:cf
+        tikv_engine_size_bytes_url = 'http://%s/api/v1/query?query=sum%%28tikv_engine_size_bytes{db="kv"}%%29by%%28type%%29' % (
+            self.prometheus_node_id)
         log.debug("tikv_engine_size_bytes_url:%s" % (tikv_engine_size_bytes_url))
-        tikv_engine_size_data,err = get_jsondata_from_url(tikv_engine_size_bytes_url)
+        tikv_engine_size_data, err = get_jsondata_from_url(tikv_engine_size_bytes_url)
         if err is not None:
             log.error(err)
         else:
@@ -814,10 +849,11 @@ class CFInfo(object):
                         self.defaultcf_sstfiles_total_size = int(cf_size_str)
             except Exception as e:
                 log.error(e)
-        log.debug("defaultcf_sstfiles_count:%s,writecf_sstfiles_count:%s,defaultcf_sstfiles_total_size:%s,writecf_sstfiles_total_size:%s" % (
-            self.defaultcf_sstfiles_count,self.writecf_sstfiles_count,self.defaultcf_sstfiles_total_size,self.writecf_sstfiles_total_size
-        ))
-
+        log.debug(
+            "defaultcf_sstfiles_count:%s,writecf_sstfiles_count:%s,defaultcf_sstfiles_total_size:%s,writecf_sstfiles_total_size:%s" % (
+                self.defaultcf_sstfiles_count, self.writecf_sstfiles_count, self.defaultcf_sstfiles_total_size,
+                self.writecf_sstfiles_total_size
+            ))
 
 
 class OutPutShow():
@@ -878,10 +914,10 @@ if __name__ == "__main__":
     arg_parser.add_argument('-t', '--tabnamelist', type=str, required=True,
                             help='table name,* mains all tables for database,muti table should like this "t1,t2,t3"')
     arg_parser.add_argument('-p', '--parallel', default=1, type=int, help='parallel')
-    arg_parser.add_argument('-f','--sqlite3dbfile',type=str,help='load data into sqlite3')
+    arg_parser.add_argument('-f', '--sqlite3dbfile', type=str, help='load data into sqlite3')
     arg_parser.add_argument('--loglevel', default="info", type=str, help='critical,error,warn,info,debug')
     args = arg_parser.parse_args()
-    cname, dbname, tabnamelist, parallel, loglevel, level,sqlite3dbfile = args.cluster, args.dbname, args.tabnamelist, args.parallel, args.loglevel, log.INFO,args.sqlite3dbfile
+    cname, dbname, tabnamelist, parallel, loglevel, level, sqlite3dbfile = args.cluster, args.dbname, args.tabnamelist, args.parallel, args.loglevel, log.INFO, args.sqlite3dbfile
     if loglevel == "info":
         level = log.INFO
     elif loglevel == "warn":
@@ -915,8 +951,8 @@ if __name__ == "__main__":
                 [val["dbname"], val["tabname"], val["is_partition"], val["index_count"], val["data_size"],
                  format_size(val["data_size"]),
                  val["index_size"], format_size(val["index_size"]), val["table_size"], format_size(val["table_size"])])
-    #python3需要用!=""来处理，python2需要用is not None处理
+    # python3需要用!=""来处理，python2需要用is not None处理
     if sqlite3dbfile != "" and sqlite3dbfile is not None:
-        load2sqlite3(sqlite3dbfile,cname,print_output.data_list)
+        load2sqlite3(sqlite3dbfile, cname, print_output.data_list)
     print_output.show()
     log.info("Complate,time spend:%d seconds" % (time.time() - start_time))
