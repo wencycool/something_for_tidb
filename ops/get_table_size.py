@@ -282,7 +282,7 @@ class Region:
         self.leader_store_node_id = ""
         # 通过property查询，为空说明未查询到
         self.sstfile_list = []  # SSTFile
-        self.Peers = []
+        self.peers = []
 
 
 class Peer:
@@ -407,6 +407,11 @@ class TiDBCluster:
         return tabname_list
 
     # 返回 dbname+"."+tabname为key，TableInfo为value的字典
+    # 注意：该方法生成的TableInfo信息中sstfile相关内容并未生成，主要用于region信息的生成
+    def get_regions4tables(self, dbname, tabname_list):
+        return self._get_regions4tables(dbname, tabname_list)
+
+    # 返回 dbname+"."+tabname为key，TableInfo为value的字典
     # 在多数据库获取时候一定要先获取完成所有数据库的region信息
     def _get_regions4tables(self, dbname, tabname_list):
         self._table_region_map = {}
@@ -466,7 +471,7 @@ class TiDBCluster:
                             peer.peer_id = each_peer["id"]
                             peer.store_id = each_peer["store_id"]
                             peer.region_id = region.region_id
-                            region.Peers.append(peer)
+                            region.peers.append(peer)
                         for store in stores:
                             if store.id == region.leader_store_id:
                                 region.leader_store_node_id = store.address
