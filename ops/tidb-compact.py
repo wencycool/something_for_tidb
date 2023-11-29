@@ -485,6 +485,14 @@ class TiDBCluster:
                             region.region_id = each_region["region_id"]
                             region.leader_id = each_region["leader"]["id"]
                             region.leader_store_id = each_region["leader"]["store_id"]
+                            for each_peer in each_region["peers"]:
+                                if "role" in each_peer and each_peer["role"] == 1:
+                                    continue
+                                peer = Peer()
+                                peer.peer_id = each_peer["id"]
+                                peer.store_id = each_peer["store_id"]
+                                peer.region_id = region.region_id
+                                region.peers.append(peer)
                             for store in stores:
                                 if store.id == region.leader_store_id:
                                     region.leader_store_node_id = store.address
