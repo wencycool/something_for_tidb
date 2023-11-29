@@ -108,7 +108,7 @@ def dump_sequences_ddl(conn: pymysql.connect, schema_filter: List[str] = [], rec
     sequence_map = {}
     cursor = conn.cursor(pymysql.cursors.DictCursor)
     step_plus = 10000  # 需要增加的步长
-    where_schema_filter = "where table_schema in (" + ",".join(
+    where_schema_filter = "where sequence_schema in (" + ",".join(
         list(map(lambda x: f"'{x}'", schema_filter))) + ")" if len(schema_filter) != 0 else ""
     cursor.execute(
         f"select sequence_schema,sequence_name,cache,cache_value,cycle,increment,max_value,min_value,start,comment from information_schema.sequences {where_schema_filter};")
@@ -317,7 +317,11 @@ def dump_seq(args):
                                          database="information_schema", cursorclass=pymysql.cursors.DictCursor)
     except pymysql.Error as e:
         print(f"Connect Error:{e}")
-    for v in dump_sequences_ddl(connection).values():
+    schema_filter = args.schema_list.split(',')
+    if len(schema_filter) == 0 or schema_filter[0] == "*":
+        schema_filter = []
+    logging.info(f"schema列表为:{schema_filter}")
+    for v in dump_sequences_ddl(connection,schema_filter).values():
         print(v)
 def main():
     parser = argparse.ArgumentParser(description="ticdc检查工具")
@@ -337,7 +341,8 @@ def main():
     parser_dumpseq.add_argument('-P', '--port', help="端口号",default=4000,type=int)
     parser_dumpseq.add_argument('-u', '--user', help="用户名", default="root")
     parser_dumpseq.add_argument('-p', '--password', help="密码", nargs='?')
-
+    parser_dumpseq.add_argument('--schema-list', '-s',
+                              help="schema列表，指定多个用分隔符隔开，比如：db1,db2,db3，默认包含所有schema", default="*")
     args = parser.parse_args()
     if args.subcommand == "check":
         check(args)
