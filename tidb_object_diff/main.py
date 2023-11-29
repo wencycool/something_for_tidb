@@ -5,6 +5,7 @@ import pymysql
 from typing import Dict, List, Tuple, Type
 import logging, hashlib
 import getpass, argparse
+import re
 
 logging.basicConfig(
     level=logging.DEBUG,  # 设置日志级别为 DEBUG，可以根据需要调整
@@ -40,11 +41,10 @@ def get_index_map(conn: pymysql.connect, schema_filter: List[str] = []) -> Dict[
 
 
 class SimplTable:
-    def __init__(self, table_schema, table_name, table_type, auto_increment, tidb_pk_type):
+    def __init__(self, table_schema, table_name, table_type, tidb_pk_type):
         self.table_schema = table_schema
         self.table_name = table_name
         self.table_type = table_type
-        self.auto_increment = auto_increment
         self.tidb_pk_type = tidb_pk_type
 
 
@@ -54,13 +54,11 @@ def get_simpltable_map(conn: pymysql.connect, schema_filter: List[str] = []) -> 
     where_schema_filter = "where table_schema in (" + ",".join(
         list(map(lambda x: f"'{x}'", schema_filter))) + ")" if len(schema_filter) != 0 else ""
     cursor.execute(
-        f"select table_schema,table_name,table_type,auto_increment,tidb_pk_type from information_schema.tables {where_schema_filter};")
+        f"select table_schema,table_name,table_type,tidb_pk_type from information_schema.tables {where_schema_filter};")
     for row in cursor.fetchall():
         simpl_table_map[row["table_schema"] + "." + row["table_name"]] = SimplTable(table_schema=row["table_schema"],
                                                                                     table_name=row["table_name"],
                                                                                     table_type=row["table_type"],
-                                                                                    auto_increment=row[
-                                                                                        "auto_increment"],
                                                                                     tidb_pk_type=row["tidb_pk_type"])
     cursor.close()
     return simpl_table_map
@@ -101,6 +99,35 @@ class Sequence:
         self.increment = increment
         self.max_value = max_value
         self.min_value = min_value
+
+
+def dump_sequences_ddl(conn: pymysql.connect, schema_filter: List[str] = [], recreate_flag=True) -> Dict[str, str]:
+    """
+    导出Sequence创建脚本，会根据当前的nextval基础上加上一个步长(一万）作为初始值，导出的Sequence主要用于ticdc的下游使用
+    """
+    sequence_map = {}
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    step_plus = 10000  # 需要增加的步长
+    where_schema_filter = "where table_schema in (" + ",".join(
+        list(map(lambda x: f"'{x}'", schema_filter))) + ")" if len(schema_filter) != 0 else ""
+    cursor.execute(
+        f"select sequence_schema,sequence_name,cache,cache_value,cycle,increment,max_value,min_value,start,comment from information_schema.sequences {where_schema_filter};")
+    for row in cursor.fetchall():
+        cursor.execute(f"select nextval(`%s`.`%s`) as col" % (row["sequence_schema"], row["sequence_name"]))
+        current_val = cursor.fetchone()["col"]
+        next_val = current_val + step_plus  # 当前基础上加一万作为下一个初始值
+        drop_sequence_ddl = "drop sequence if exists `%s`.`%s`;" % (row["sequence_schema"], row["sequence_name"])
+        create_sequence_ddl = "%screate sequence `%s`.`%s` start with %d minvalue %d maxvalue %d increment by %d %s %s " \
+                              "comment='%s';" % ( drop_sequence_ddl if recreate_flag else "",
+                                  row["sequence_schema"], row["sequence_name"], next_val, row["min_value"],
+                                  row["max_value"],
+                                  row["increment"],
+                                  "nocache" if row["cache"] == 0 else "cache " + str(row["cache_value"]),
+                                  "nocycle" if row["cycle"] == 0 else "cycle", row["comment"]
+                              )
+        sequence_map[row["sequence_schema"] + "." + row["sequence_name"]] = create_sequence_ddl
+    cursor.close()
+    return sequence_map
 
 
 def get_sequence_map(conn: pymysql.connect, schema_filter: List[str] = []) -> Dict[str, Sequence]:
@@ -205,18 +232,9 @@ def get_map_diff(a: Dict[str, Type], b: Dict[str, Type]) -> Dict[str, Tuple]:
     return output_dict
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="系统表比脚本")
-    parser.add_argument('--src-host', help="上游IP地址", required=True)
-    parser.add_argument('--tgt-host', help="下游IP地址", required=True)
-    parser.add_argument('--tgt-port', help="端口号,默认4000", default=4000, type=int)
-    parser.add_argument('--src-port', help="端口号,默认4000", default=4000, type=int)
-    parser.add_argument('--user', '-u', help="用户名", default="root")
-    parser.add_argument('--password', '-p', help="密码", nargs='?')
-    parser.add_argument('--schema-list','-s',help="schema列表，指定多个用分隔符隔开，比如：db1,db2,db3，默认包含所有schema",default="*")
-    args = parser.parse_args()
+def check(args):
     if args.password is None:
-        password = getpass.getpass("Enter your password:")
+        args.password = getpass.getpass("Enter your password:")
     schema_filter = args.schema_list.split(',')
     if len(schema_filter) == 0 or schema_filter[0] == "*":
         schema_filter = []
@@ -230,6 +248,7 @@ if __name__ == "__main__":
         print(f"Connect Error:{e}")
     src_table_map = get_simpltable_map(src_connection, schema_filter)
     tgt_table_map = get_simpltable_map(tgt_connection, schema_filter)
+
     logging.info("检查表情况，")
     # 定义占位符距离
     p1, p2, p2, p3, p4 = 100, 10, 10, 10, 10
@@ -289,3 +308,41 @@ if __name__ == "__main__":
     print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
     for k, v in get_map_diff(src_var_map, tgt_var_map).items():
         print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
+
+def dump_seq(args):
+    if args.password is None:
+        args.password = getpass.getpass("Enter your password:")
+    try:
+        connection = pymysql.connect(host=args.host, port=args.port, user=args.user, password=args.password,
+                                         database="information_schema", cursorclass=pymysql.cursors.DictCursor)
+    except pymysql.Error as e:
+        print(f"Connect Error:{e}")
+    for v in dump_sequences_ddl(connection).values():
+        print(v)
+def main():
+    parser = argparse.ArgumentParser(description="ticdc检查工具")
+    subparsers = parser.add_subparsers(title="Subcommands", dest="subcommand", required=True)
+    parser_check = subparsers.add_parser("check", help="表结构对比检查")
+    parser_check.add_argument('--src-host', help="上游IP地址", required=True)
+    parser_check.add_argument('--tgt-host', help="下游IP地址", required=True)
+    parser_check.add_argument('--tgt-port', help="端口号,默认4000", default=4000, type=int)
+    parser_check.add_argument('--src-port', help="端口号,默认4000", default=4000, type=int)
+    parser_check.add_argument('--user', '-u', help="用户名", default="root")
+    parser_check.add_argument('--password', '-p', help="密码", nargs='?')
+    parser_check.add_argument('--schema-list', '-s',
+                              help="schema列表，指定多个用分隔符隔开，比如：db1,db2,db3，默认包含所有schema", default="*")
+
+    parser_dumpseq = subparsers.add_parser("dump-seq",help="导出sequence")
+    parser_dumpseq.add_argument('-H','--host',help="IP地址",required=True)
+    parser_dumpseq.add_argument('-P', '--port', help="端口号",default=4000,type=int)
+    parser_dumpseq.add_argument('-u', '--user', help="用户名", default="root")
+    parser_dumpseq.add_argument('-p', '--password', help="密码", nargs='?')
+
+    args = parser.parse_args()
+    if args.subcommand == "check":
+        check(args)
+    elif args.subcommand == "dump-seq":
+        dump_seq(args)
+if __name__ == "__main__":
+    main()
+
