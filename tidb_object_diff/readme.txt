@@ -21,9 +21,20 @@ tpch10.nation                                                                   
 
 
 帮助：
-usage: main.py [-h] --src-host SRC_HOST --tgt-host TGT_HOST [--tgt-port TGT_PORT] [--src-port SRC_PORT] [--user USER] [--password [PASSWORD]] [--schema-list SCHEMA_LIST]
+PS E:\PythonProjects\something_for_tidb\tidb_object_diff> python main.py -h
+usage: main.py [-h] {check,dump-seq} ...
 
-系统表比脚本
+ticdc检查工具
+
+options:
+  -h, --help        show this help message and exit
+
+Subcommands:
+  {check,dump-seq}
+    check           表结构对比检查
+    dump-seq        导出sequence
+PS E:\PythonProjects\something_for_tidb\tidb_object_diff> python main.py check -h
+usage: main.py check [-h] --src-host SRC_HOST --tgt-host TGT_HOST [--tgt-port TGT_PORT] [--src-port SRC_PORT] [--user USER] [--password [PASSWORD]] [--schema-list SCHEMA_LIST]
 
 options:
   -h, --help            show this help message and exit
@@ -36,12 +47,23 @@ options:
                         密码
   --schema-list SCHEMA_LIST, -s SCHEMA_LIST
                         schema列表，指定多个用分隔符隔开，比如：db1,db2,db3，默认包含所有schema
+PS E:\PythonProjects\something_for_tidb\tidb_object_diff> python main.py dump-seq -h
+usage: main.py dump-seq [-h] -H HOST [-P PORT] [-u USER] [-p [PASSWORD]]
+
+options:
+  -h, --help            show this help message and exit
+  -H HOST, --host HOST  IP地址
+  -P PORT, --port PORT  端口号
+  -u USER, --user USER  用户名
+  -p [PASSWORD], --password [PASSWORD]
+                        密码
+
 
 输出示例：
-python main.py --src-host="192.168.31.201" --src-port=4000 --tgt-host="192.168.31.201" --tgt-port=4001 --user root -p -s "tpch10"
+PS E:\PythonProjects\something_for_tidb\tidb_object_diff> python main.py check --src-host="192.168.31.201" --src-port=4000 --tgt-host="192.168.31.201" --tgt-port=4001 --user root -p -s "tpch10"
 Enter your password:
-2023-11-18 21:39:41 - INFO - schema列表为:['tpch10']
-2023-11-18 21:39:41 - INFO - 检查表情况，
+2023-11-29 22:22:01 - INFO - schema列表为:['tpch10']
+2023-11-29 22:22:01 - INFO - 检查表情况，
 [TABLE]                                                                                               source    target  difference
 tpch10.nation                                                                                           +         -         -
 tpch10.region                                                                                           +         -         -
@@ -52,7 +74,7 @@ tpch10.customer                                                                 
 tpch10.orders                                                                                           +         -         -
 tpch10.lineitem                                                                                         +         -         -
 tpch10.orders_bak                                                                                       +         -         -
-2023-11-18 21:39:41 - INFO - 查看索引差异
+2023-11-29 22:22:01 - INFO - 查看索引差异
 [INDEX]                                                                                               source    target  difference
 tpch10.customer.PRIMARY                                                                                 +         -         -
 tpch10.lineitem.PRIMARY                                                                                 +         -         -
@@ -63,9 +85,9 @@ tpch10.part.PRIMARY                                                             
 tpch10.partsupp.PRIMARY                                                                                 +         -         -
 tpch10.region.PRIMARY                                                                                   +         -         -
 tpch10.supplier.PRIMARY                                                                                 +         -         -
-2023-11-18 21:39:41 - INFO - 查看Sequence差异
+2023-11-29 22:22:01 - INFO - 查看Sequence差异
 [SEQUENCE]                                                                                            source    target  difference
-2023-11-18 21:39:41 - INFO - 查看约束差异
+2023-11-29 22:22:01 - INFO - 查看约束差异
 [CONSTRAINTS]                                                                                         source    target  difference
 tpch10.nation.PRIMARY                                                                                   +         -         -
 tpch10.region.PRIMARY                                                                                   +         -         -
@@ -76,9 +98,17 @@ tpch10.customer.PRIMARY                                                         
 tpch10.orders.PRIMARY                                                                                   +         -         -
 tpch10.lineitem.PRIMARY                                                                                 +         -         -
 tpch10.orders_bak.PRIMARY                                                                               +         -         -
-2023-11-18 21:39:41 - INFO - 查看用户差异
+2023-11-29 22:22:01 - INFO - 查看用户差异
 [USER]                                                                                                source    target  difference
 'test'@'%'                                                                                              +         -         -
-2023-11-18 21:39:41 - INFO - 查看重点参数差异
+'root'@'%'                                                                                              -         -         +
+2023-11-29 22:22:01 - INFO - 查看重点参数差异
 [Variable]                                                                                            source    target  difference
 variable.tidb_analyze_skip_column_types                                                                 +         -         -
+
+# 导出sequence（在原来的基础上+10000）
+PS E:\PythonProjects\something_for_tidb\tidb_object_diff> python main.py dump-seq -H 192.168.31.201 -p
+Enter your password:
+drop sequence if exists `test`.`seq2`;create sequence `test`.`seq2` start with 10018 minvalue 1 maxvalue 9223372036854775806 increment by 1 cache 1000 nocycle comment='';
+drop sequence if exists `test`.`seq1`;create sequence `test`.`seq1` start with 20020 minvalue 1 maxvalue 9223372036854775806 increment by 1 nocache cycle comment='test';
+drop sequence if exists `test`.`sequence1`;create sequence `test`.`sequence1` start with 20016 minvalue 1 maxvalue 9223372036854775806 increment by 1 cache 1 nocycle comment='';
