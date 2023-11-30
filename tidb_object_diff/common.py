@@ -60,9 +60,3 @@ def kill_sessions(conn: pymysql.connect, attr: Attr = None):
 
 
 
-
-if __name__ == "__main__":
-    log.basicConfig(level=log.INFO)
-    connection = pymysql.connect(host="192.168.31.201", port=4000, user='root', password="",
-                                 database="information_schema")
-    kill_sessions(connection, Attr(users=["test"]))
