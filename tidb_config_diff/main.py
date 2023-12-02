@@ -86,7 +86,7 @@ class TiDBInfo:
                     tables_str = ",".join(tables)
                     raise Exception(f"系统表中表个数需大于1，当前表为:{tables_str}")
                 else:
-                    table1, table2 = sorted(tables)[:2]
+                    table1, table2 = sorted(tables, reverse=True)[:2]
             else:
                 if table1 == "" or table2 == "":
                     raise Exception(f"待比较的两个配置表必须存在")
