@@ -3,7 +3,7 @@
 import os
 import logging as log
 import yaml
-from something_for_tidb.tidb_prometheus_diff.tabulate import tabulate
+from tabulate import tabulate
 import argparse
 
 
