@@ -1,4 +1,4 @@
-PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py -h
+PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py -h              
 usage: main.py [-h] [-d DB] {collect,report} ...
 
 参数对比工具
@@ -21,7 +21,7 @@ options:
   -u USER, --user USER  用户名
   -p [PASSWORD], --password [PASSWORD]
                         密码
-PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py report -h
+PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py report -h 
 usage: main.py report [-h] [-l] [--table1 TABLE1] [--table2 TABLE2] [--limit LIMIT]
 
 options:
@@ -32,17 +32,17 @@ options:
   --limit LIMIT      打印输出行数,默认输出所有行
 
 
-PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py collect -H 192.168.31.201 -P 4000 -u root -p
+PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py collect -H 192.168.31.201 -P 4000 -u root -p 
 Enter your password:
-PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py collect -H 192.168.31.201 -P 4001 -u root -p
+PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py collect -H 192.168.31.201 -P 4001 -u root -p 
 Enter your password:
 
 #查看当前采集了哪些参数表
-PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py report -l
+PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py report -l                                    
 TABLE LIST:[tidb_cfg_v7_5_0,tidb_cfg_v7_1_2]
 
 #默认情况下会找版本最高的2个参数表做比较（这里--limit参数只打印前N行，避免全部输出）
-PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py report --limit 5
+PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py report --limit 5    
 ┌──────────┬─────────┬──────────┬───────────────────────────────────────┬───────────────────────────────┬────────────────────┐
 │   Number │ scope   │ type     │ var_name                              │ var_value_v7.5.0              │ var_value_v7.1.2   │
 ├──────────┼─────────┼──────────┼───────────────────────────────────────┼───────────────────────────────┼────────────────────┤
