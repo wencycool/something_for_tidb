@@ -70,13 +70,14 @@ class TiDBInfo:
             return True
         return False
 
-    def report_diff(self, table1="", table2="", ignore_vars=[], auto=True):
+    def report_diff(self, table1="", table2="", ignore_vars=[], auto=True, limit=0,offset=0):
         """
         比较两个参数表的差异
         :param auto: 是否自动获取最近2张表并进行差异判断
         :param ignore_vars: 忽略对比的参数项，不打印在该列表中的参数差异
         :param table1: 第一个参数表
         :param table2: 第二个参数表
+        :param limit: 打印行数，0表示打印所有行，其它表示只输出前N行
         :return: 返回差异报表
         """
         if not self.has_table(table1) or not self.has_table(table2):
@@ -94,7 +95,7 @@ class TiDBInfo:
         ignore_scope = ["session"]  # 不显示为session级别变量
         table1_header = table1.removeprefix("tidb_cfg_").replace("_",".")
         table2_header = table2.removeprefix("tidb_cfg_").replace("_", ".")
-        headers = ["scope", "type", "var_name", f"var_value_{table1_header}", f"var_value_{table2_header}"]
+        headers = ["Number", "scope", "type", "var_name", f"var_value_{table1_header}", f"var_value_{table2_header}"]
         # 查找table1中有，table2中没有的参数
         data = []  # 和headers对齐
         except_table2_sql = (f"select scope,type,var_name,var_value from {table1} where (scope,type,var_name) in ("
@@ -155,8 +156,16 @@ class TiDBInfo:
                     # 处理结尾包含逻辑
                     elif t == 3 and row[2].startswith(var):
                         del data[i]
+        data_with_number = []
+        i = 0
+        for row in data:
+            i += 1
+            new_row = [i] + row
+            data_with_number.append(new_row)
+        if limit >0:
+            data_with_number = data_with_number[offset:offset + limit]
         sqlite3_conn.close()
-        return tabulate(data, headers=headers, tablefmt="simple_grid")
+        return tabulate(data_with_number, headers=headers, tablefmt="simple_grid")
 
     def insert_tidb_vars(self):
         global sqlite3_conn
@@ -197,8 +206,12 @@ class TiDBInfo:
 def collect(args) -> TiDBInfo:
     if args.password is None:
         args.password = getpass.getpass("Enter your password:")
-    connection = pymysql.connect(host=args.host, port=args.port, user=args.user, password=args.password,
-                                 database="information_schema")
+    try:
+        connection = pymysql.connect(host=args.host, port=args.port, user=args.user, password=args.password,
+                                     database="information_schema")
+    except Exception as e:
+        print(e)
+        return
     tidbInfo = TiDBInfo(connection, args.db)
     tidbInfo.insert_tidb_vars()
     return tidbInfo
@@ -210,7 +223,20 @@ def report(args):
         tables_str = ",".join(tidbInfo.get_cfg_tables())
         print(f"TABLE LIST:[{tables_str}]")
         return
-    print(tidbInfo.report_diff(args.table1,args.table2,ignore_vars=ignore_vars, auto=True))
+    limit_list = args.limit.split(",")
+    offset = 0
+    limit = 0
+    try:
+        if len(limit_list) == 1:
+            limit = int(limit_list[0])
+        elif len(limit_list) == 2:
+            limit = int(limit_list[1])
+            offset = int(limit_list[0])
+    except Exception as e:
+        print(e)
+        return
+    print(tidbInfo.report_diff(args.table1, args.table2, ignore_vars=ignore_vars, auto=True, limit=limit,offset=offset))
+
 
 
 if __name__ == "__main__":
@@ -227,8 +253,9 @@ if __name__ == "__main__":
     parser_report.add_argument('-l', '--list-tables',action="store_true", help="打印当前已经完成采集的系统表")
     parser_report.add_argument('--table1', help="对比的第一个表", required=False)
     parser_report.add_argument('--table2', help="对比的第二个表", required=False)
+    parser_report.add_argument('--limit', help="打印输出行数,默认输出所有行", default="0", type=str)
     args = parser.parse_args()
-    log.basicConfig(level=log.DEBUG)
+    # log.basicConfig(level=log.DEBUG)
 
     if args.subcommand == "collect":
         collect(args)
