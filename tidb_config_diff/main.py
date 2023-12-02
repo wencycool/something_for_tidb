@@ -6,6 +6,11 @@ import sqlite3
 from tabulate import tabulate
 import argparse
 import getpass
+import sys
+
+# 判断python的版本
+if sys.version_info < (3, ):
+    raise Exception("python version need larger than 3.6")
 
 # 需要过滤的对比参数名称（variable和config参数名直接写在这里），支持类似于like语句的模糊匹配
 ignore_vars = ["tidb_config", "%urls", "%path%", "%file%", "%addr%", "%log", "%dir", "%endpoints",
