@@ -95,7 +95,6 @@ class TiDBInfo:
                     tables_str = ",".join(tables)
                     raise Exception(f"系统表中表个数需大于1，当前表为:{tables_str}")
                 else:
-                    # todo 调整顺序，保证最后插入的最先执行
                     # table1, table2 = sorted(tables, reverse=True)[:2]
                     table1, table2 = tables[-1: -3: -1]
             else:
