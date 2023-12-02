@@ -43,9 +43,11 @@ class TiDBInfo:
         创建参数配置表并返回表名
         :return: 表名
         """
+        host_info = self.conn.get_host_info().split()[1]
+        host_info_format = host_info.replace(".", "_").replace(":", "__")
         cursor = sqlite3.connect(self.sqlite3_filename).cursor()
         version_format = self.tidb_version.replace(".", "_")
-        table_name = "tidb_cfg_" + version_format
+        table_name = "tidb_cfg_" + version_format + "_host_" + host_info_format
         delete_table_ddl = f"drop table if exists {table_name}"
         create_table_ddl = f"create table if not exists {table_name} (scope varchar(20),type varchar(20),var_name varchar(200),var_value text)"
         log.debug(f"create table ddl:{create_table_ddl}")
@@ -61,7 +63,8 @@ class TiDBInfo:
         """
         conn = sqlite3.connect(self.sqlite3_filename)
         tables = []
-        for each_table in conn.execute(f"select tbl_name from sqlite_master where type='table'").fetchall():
+        for each_table in conn.execute(
+                f"select tbl_name from sqlite_master where type='table' and tbl_name like 'tidb_cfg_%'").fetchall():
             tables.append(each_table[0])
         conn.close()
         return tables
@@ -75,7 +78,7 @@ class TiDBInfo:
             return True
         return False
 
-    def report_diff(self, table1="", table2="", ignore_vars=[], auto=True, limit=0,offset=0):
+    def report_diff(self, table1="", table2="", ignore_vars=[], auto=True, limit=0, offset=0):
         """
         比较两个参数表的差异
         :param auto: 是否自动获取最近2张表并进行差异判断
@@ -92,14 +95,18 @@ class TiDBInfo:
                     tables_str = ",".join(tables)
                     raise Exception(f"系统表中表个数需大于1，当前表为:{tables_str}")
                 else:
-                    table1, table2 = sorted(tables, reverse=True)[:2]
+                    # todo 调整顺序，保证最后插入的最先执行
+                    # table1, table2 = sorted(tables, reverse=True)[:2]
+                    table1, table2 = tables[-1: -3: -1]
             else:
                 if table1 == "" or table2 == "":
                     raise Exception(f"待比较的两个配置表必须存在")
         log.info(f"table1:{table1},table2:{table2}")
         ignore_scope = ["session"]  # 不显示为session级别变量
-        table1_header = table1.removeprefix("tidb_cfg_").replace("_",".")
-        table2_header = table2.removeprefix("tidb_cfg_").replace("_", ".")
+        table1_header = "_host_".join(
+            map(lambda x: x.replace("_", "."), table1.removeprefix("tidb_cfg_").replace("__", ":").split("_host_")))
+        table2_header = "_host_".join(
+            map(lambda x: x.replace("_", "."), table2.removeprefix("tidb_cfg_").replace("__", ":").split("_host_")))
         headers = ["Number", "scope", "type", "var_name", f"var_value_{table1_header}", f"var_value_{table2_header}"]
         # 查找table1中有，table2中没有的参数
         data = []  # 和headers对齐
@@ -167,7 +174,7 @@ class TiDBInfo:
             i += 1
             new_row = [i] + row
             data_with_number.append(new_row)
-        if limit >0:
+        if limit > 0:
             data_with_number = data_with_number[offset:offset + limit]
         sqlite3_conn.close()
         return tabulate(data_with_number, headers=headers, tablefmt="simple_grid")
@@ -240,8 +247,8 @@ def report(args):
     except Exception as e:
         print(e)
         return
-    print(tidbInfo.report_diff(args.table1, args.table2, ignore_vars=ignore_vars, auto=True, limit=limit,offset=offset))
-
+    print(
+        tidbInfo.report_diff(args.table1, args.table2, ignore_vars=ignore_vars, auto=True, limit=limit, offset=offset))
 
 
 if __name__ == "__main__":
@@ -255,7 +262,7 @@ if __name__ == "__main__":
     parser_collect.add_argument('-p', '--password', help="密码", nargs="?")
 
     parser_report = subparsers.add_parser("report", help="参数对比输出")
-    parser_report.add_argument('-l', '--list-tables',action="store_true", help="打印当前已经完成采集的系统表")
+    parser_report.add_argument('-l', '--list-tables', action="store_true", help="打印当前已经完成采集的系统表")
     parser_report.add_argument('--table1', help="对比的第一个表", required=False)
     parser_report.add_argument('--table2', help="对比的第二个表", required=False)
     parser_report.add_argument('--limit', help="打印输出行数,默认输出所有行", default="0", type=str)
@@ -266,4 +273,3 @@ if __name__ == "__main__":
         collect(args)
     elif args.subcommand == "report":
         report(args)
-
