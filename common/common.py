@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 # coding: utf-8
 
@@ -10,7 +11,7 @@ import re
 import ast
 
 # 判断python的版本
-if float(sys.version[:3]) < 3.6:
+if sys.version_info < (3, 6):
     raise "python version need larger than 3.6"
 
 
@@ -22,6 +23,7 @@ def command_run(command, use_temp=False, timeout=30) -> (str, int):
     :param int timeout: 函数执行超时时间
     :return: 结果集和code
     """
+
     def _str(input):
         if isinstance(input, bytes):
             return str(input, 'UTF-8')
@@ -69,6 +71,7 @@ def command_run(command, use_temp=False, timeout=30) -> (str, int):
                 mutable[2].returncode = 1
         return _str(mutable[0]) + _str(mutable[1]), mutable[2].returncode
 
+
 def check_number(s):
     """
     判断当前字符串是否数字类型，并返回浮点数
@@ -83,6 +86,8 @@ def check_number(s):
         return int(s), True
     else:
         return None, False
+
+
 def check_list(s):
     """
     检查当前字符串是否列表形式，并返回列表
@@ -95,9 +100,59 @@ def check_list(s):
             return result, True
     except (SyntaxError, ValueError):
         return None, False
-    return None,False
+    return None, False
 
 
+class Cluster:
+    def __init__(self, cluster_name, user, version, path, private_key):
+        self.cluster_name = cluster_name
+        self.user = user
+        self.version = version
+        self.path = path
+        self.private_key = private_key
+
+
+def tiup_ok():
+    """
+    判断tiup命令是否正常
+    :return:
+    """
+    cmd = "command -v tiup"
+    _, recode = command_run(cmd)
+    if recode != 0:
+        return False
+    return True
+
+
+def list_clusters() -> [Cluster]:
+    """
+    列出当前tiup下所有集群
+    :return:返回当前tiup下所有集群列表
+    """
+    clusters = []
+    if not tiup_ok():
+        raise Exception("tiup command cannot found")
+    cmd = "tiup cluster list 2>/dev/null"
+    result: str
+    result, recode = command_run(cmd)
+    if recode != 0:
+        raise Exception(f"list cluster error,msg:{result},code:{recode}")
+    can_print = False
+    for each_line in result.split("\n"):
+        if each_line.startswith("----"):
+            can_print = True
+            continue
+        elif each_line.strip() == "":
+            continue
+        if can_print:
+            each_line_split = each_line.split()
+            if len(each_line_split) != 5:
+                raise Exception(f"each cluster line not eq 5,line split:{each_line_split}")
+            clusters.append(Cluster(*each_line_split))
+    return clusters
+
+
+# 处理tiup exec cutomer --command ""的结果集
 def _tiup_exec_result_to_list(str1):
     """
     tiup exec <cluster_name> --command "xxx"的结果作为str1，返回以(ip,<result>)为元组的列表，输出每一个IP地址上执行的结果
@@ -107,4 +162,33 @@ def _tiup_exec_result_to_list(str1):
     ipv4_pattern = r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
     re_compile = re.compile(rf"^Run command on.*\nOutputs of.*on ({ipv4_pattern}):\nstdout:\n", re.MULTILINE)
     o_list = re_compile.split(str1)[1:]
-    return list(zip(o_list[::2],o_list[1::2]))
+    return list(zip(o_list[::2], o_list[1::2]))
+
+
+# 处理类似于tiup cluster display中标题对应的column起止位置，便于查找对应的值，在组件打patch后会导致值多空格，所以不应采用line.split()来分隔，应用此函数来查找对应的值
+def _find_col_start_stop_pos(header_line: str, col_name: str) -> (int, int):
+    """
+    在标题中找到指定标题的起止位置，便于对该字段的数据进行截取
+
+    Raises ValueError 如果col_names中元素在header_line中不唯一.
+    :param header_line:
+    :param col_name:
+    :param start_pos:header_line中的开始查找位置
+    :return:返回col_name在header_line中对应的起止位置
+
+    example:
+      在tiup cluster display时列出:ID                    Role          Host等标题，可以用此函数查找某个标题的起止位置
+
+    """
+    # col_names中元素应在header_line中唯一
+    if header_line.count(col_name) != 1:
+        raise ValueError(f"col_name:{col_name}在header_line:{header_line}中必须唯一")
+    match = re.compile(rf"\b{col_name}(?:\s+|$)").search(header_line)
+    if match:
+        return match.start(), match.end()
+    else:
+        raise ValueError(f"col_name:{col_name}在header_line:{header_line}中找不到起止点")
+
+
+if __name__ == "__main__":
+    pass
