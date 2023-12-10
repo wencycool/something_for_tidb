@@ -15,12 +15,13 @@ if sys.version_info < (3, 6):
     raise "python version need larger than 3.6"
 
 
-def command_run(command, use_temp=False, timeout=30) -> (str, int):
+def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (str,str, int):
     """
 
     :param str command: shell命令
     :param bool use_temp: 是否使用临时文件存储结果集，对于大结果集处理有效
     :param int timeout: 函数执行超时时间
+    :param stderr_to_stdout: 是否将错误输出合并到stdout中
     :return: 结果集和code
     """
 
@@ -38,7 +39,8 @@ def command_run(command, use_temp=False, timeout=30) -> (str, int):
         out_fileno = out_temp.fileno()
 
         def target():
-            mutable[2] = subprocess.Popen(command, stdout=out_fileno, stderr=out_fileno, shell=True)
+            # 标准输出结果集比较大输出到文件，错误输出到PIPE
+            mutable[2] = subprocess.Popen(command, stdout=out_fileno, stderr=subprocess.PIPE, shell=True)
             mutable[2].wait()
 
         th = threading.Thread(target=target)
@@ -55,7 +57,10 @@ def command_run(command, use_temp=False, timeout=30) -> (str, int):
             out_temp.seek(0)
             result = out_temp.read()
         out_temp.close()
-        return _str(result), mutable[2].returncode
+        if stderr_to_stdout:
+            return _str(result) + _str(mutable[2].stderr.read()), mutable[2].returncode
+        else:
+            return _str(result), mutable[2].returncode
     else:
         def target():
             mutable[2] = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -69,7 +74,10 @@ def command_run(command, use_temp=False, timeout=30) -> (str, int):
             th.join()
             if mutable[2].returncode == 0:
                 mutable[2].returncode = 1
-        return _str(mutable[0]) + _str(mutable[1]), mutable[2].returncode
+        if stderr_to_stdout:
+            return _str(mutable[0]) + _str(mutable[1]), mutable[2].returncode
+        else:
+            return _str(mutable[0]), mutable[2].returncode
 
 
 def check_number(s):
@@ -218,150 +226,13 @@ def _find_json_strings(text):
     return ""
 
 if __name__ == "__main__":
-    str1 = """
-    tiup is checking updates for component cluster ...
-A new version of cluster is available:
-   The latest version:         v1.14.0
-   Local installed version:    v1.12.5
-   Update current component:   tiup update cluster
-   Update all components:      tiup update --all
-
-Starting component `cluster`: /home/tidb/.tiup/components/cluster/v1.12.5/tiup-cluster display tidb-test --format=json
-{
-  "cluster_meta": {
-    "cluster_type": "tidb",
-    "cluster_name": "tidb-test",
-    "cluster_version": "v7.5.0",
-    "deploy_user": "tidb",
-    "ssh_type": "builtin",
-    "tls_enabled": false,
-    "dashboard_url": "http://192.168.31.201:2379/dashboard",
-    "grafana_urls": [
-      "http://192.168.31.201:3000"
-    ]
-  },
-  "instances": [
-    {
-      "id": "192.168.31.201:9093",
-      "role": "alertmanager",
-      "host": "192.168.31.201",
-      "manage_host": "192.168.31.201",
-      "ports": "9093/9094",
-      "os_arch": "linux/x86_64",
-      "status": "Up",
-      "memory": "-",
-      "memory_limit": "-",
-      "cpu_quota": "-",
-      "since": "-",
-      "data_dir": "/data/tidb-data/alertmanager-9093",
-      "deploy_dir": "/data/tidb-deploy/alertmanager-9093",
-      "ComponentName": "alertmanager",
-      "Port": 9093
-    },
-    {
-      "id": "192.168.31.201:3000",
-      "role": "grafana",
-      "host": "192.168.31.201",
-      "manage_host": "192.168.31.201",
-      "ports": "3000",
-      "os_arch": "linux/x86_64",
-      "status": "Up",
-      "memory": "-",
-      "memory_limit": "-",
-      "cpu_quota": "-",
-      "since": "-",
-      "data_dir": "-",
-      "deploy_dir": "/data/tidb-deploy/grafana-3000",
-      "ComponentName": "grafana",
-      "Port": 3000
-    },
-    {
-      "id": "192.168.31.201:2379",
-      "role": "pd",
-      "host": "192.168.31.201",
-      "manage_host": "192.168.31.201",
-      "ports": "2379/2380",
-      "os_arch": "linux/x86_64",
-      "status": "Up|L|UI",
-      "memory": "-",
-      "memory_limit": "-",
-      "cpu_quota": "-",
-      "since": "-",
-      "data_dir": "/data/tidb-data/pd-2379",
-      "deploy_dir": "/data/tidb-deploy/pd-2379",
-      "ComponentName": "pd",
-      "Port": 2379
-    },
-    {
-      "id": "192.168.31.201:9090",
-      "role": "prometheus",
-      "host": "192.168.31.201",
-      "manage_host": "192.168.31.201",
-      "ports": "9090/12020",
-      "os_arch": "linux/x86_64",
-      "status": "Up",
-      "memory": "-",
-      "memory_limit": "-",
-      "cpu_quota": "-",
-      "since": "-",
-      "data_dir": "/data/tidb-data/prometheus-9090",
-      "deploy_dir": "/data/tidb-deploy/prometheus-9090",
-      "ComponentName": "prometheus",
-      "Port": 9090
-    },
-    {
-      "id": "192.168.31.201:4000",
-      "role": "tidb",
-      "host": "192.168.31.201",
-      "manage_host": "192.168.31.201",
-      "ports": "4000/10080",
-      "os_arch": "linux/x86_64",
-      "status": "Up",
-      "memory": "-",
-      "memory_limit": "-",
-      "cpu_quota": "-",
-      "since": "-",
-      "data_dir": "-",
-      "deploy_dir": "/data/tidb-deploy/tidb-4000",
-      "ComponentName": "tidb",
-      "Port": 4000
-    },
-    {
-      "id": "192.168.31.201:9000",
-      "role": "tiflash",
-      "host": "192.168.31.201",
-      "manage_host": "192.168.31.201",
-      "ports": "9000/8123/3930/20170/20292/8234",
-      "os_arch": "linux/x86_64",
-      "status": "Up",
-      "memory": "-",
-      "memory_limit": "-",
-      "cpu_quota": "-",
-      "since": "-",
-      "data_dir": "/data/tidb-data/tiflash-9000",
-      "deploy_dir": "/data/tidb-deploy/tiflash-9000",
-      "ComponentName": "tiflash",
-      "Port": 9000
-    },
-    {
-      "id": "192.168.31.201:20160",
-      "role": "tikv",
-      "host": "192.168.31.201",
-      "manage_host": "192.168.31.201",
-      "ports": "20160/20180",
-      "os_arch": "linux/x86_64",
-      "status": "Up",
-      "memory": "-",
-      "memory_limit": "-",
-      "cpu_quota": "-",
-      "since": "-",
-      "data_dir": "/data/tidb-data/tikv-20160",
-      "deploy_dir": "/data/tidb-deploy/tikv-20160",
-      "ComponentName": "tikv",
-      "Port": 20160
-    }
-  ]
-}
-{"exit_code":0}
-"""
-    print(_find_json_strings(str1))
+    # 查看所有集群的prometheus节点是否备份成功
+    for cluster in list_clusters():
+        cname = cluster.cluster_name
+        shell_cmd = "df -h /data"
+        cmd = f"tiup cluster exec {cname} -R prometheus --command '{shell_cmd}'"
+        result,recode = command_run(cmd,stderr_to_stdout=False)
+        if recode !=0:
+            raise Exception(result)
+        for ip,ip_result in _tiup_exec_result_to_list(result):
+            print(f"IP:{ip},result:{ip_result},end!")
