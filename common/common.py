@@ -15,7 +15,7 @@ if sys.version_info < (3, 6):
     raise "python version need larger than 3.6"
 
 
-def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (str,str, int):
+def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (str, str, int):
     """
 
     :param str command: shell命令
@@ -169,8 +169,24 @@ def _tiup_exec_result_to_list(str1):
     """
     ipv4_pattern = r"\b(?:\d{1,3}\.){3}\d{1,3}\b"
     re_compile = re.compile(rf"^Run command on.*\nOutputs of.*on ({ipv4_pattern}):\nstdout:\n", re.MULTILINE)
-    o_list = re_compile.split(str1)[1:]
+    re_split = re_compile.split(str1)
+    if len(re_split) == 1:
+        return
+    o_list = re_split[1:]
     return list(zip(o_list[::2], o_list[1::2]))
+
+
+# 格式化tiup cluster exec xxx --command "xxx"的结果集，返回以(ip,<result>)为元组的列表，输出每一个IP地址上执行的结果
+def tiup_cluster_exec(cmd):
+    """
+    tiup cluster exec <cluster_name> --command "xxx"的结果作为str1，返回以(ip,<result>)为元组的列表，输出每一个IP地址上执行的结果
+    :param cmd:
+    :return:
+    """
+    result, recode = command_run(cmd, stderr_to_stdout=False)
+    if recode != 0:
+        raise Exception(result)
+    return _tiup_exec_result_to_list(result)
 
 
 # 处理类似于tiup cluster display中标题对应的column起止位置，便于查找对应的值，在组件打patch后会导致值多空格，所以不应采用line.split()来分隔，应用此函数来查找对应的值
@@ -196,6 +212,7 @@ def _find_col_start_stop_pos(header_line: str, col_name: str) -> (int, int):
         return match.start(), match.end()
     else:
         raise ValueError(f"col_name:{col_name}在header_line:{header_line}中找不到起止点")
+
 
 def _find_json_strings(text):
     """
@@ -225,14 +242,15 @@ def _find_json_strings(text):
                     return text[start:end]
     return ""
 
+
 if __name__ == "__main__":
     # 查看所有集群的prometheus节点是否备份成功
     for cluster in list_clusters():
         cname = cluster.cluster_name
         shell_cmd = "df -h /data"
         cmd = f"tiup cluster exec {cname} -R prometheus --command '{shell_cmd}'"
-        result,recode = command_run(cmd,stderr_to_stdout=False)
-        if recode !=0:
+        result, recode = command_run(cmd, stderr_to_stdout=False)
+        if recode != 0:
             raise Exception(result)
-        for ip,ip_result in _tiup_exec_result_to_list(result):
+        for ip, ip_result in _tiup_exec_result_to_list(result):
             print(f"IP:{ip},result:{ip_result},end!")
