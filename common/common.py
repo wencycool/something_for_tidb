@@ -9,6 +9,8 @@
 import sys, threading, subprocess, tempfile
 import re
 import ast
+import logging
+from logging.handlers import TimedRotatingFileHandler
 
 # 判断python的版本
 if sys.version_info < (3, 6):
@@ -80,6 +82,38 @@ def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (
             return _str(mutable[0]), mutable[2].returncode
 
 
+# 获取日志对象，每天生成一个日志文件，最多保存7个日志文件
+def get_logger(log_file, level: logging.INFO) -> logging.Logger:
+    # 生成文档说明
+    """
+    :param log_file: 日志文件名
+    :param level: 日志级别
+    :return: 日志对象
+
+    # 添加示例
+    >>> import common
+    >>> logger = common.get_logger("test.log", logging.INFO)
+    >>> logger.info("test")
+
+    """
+
+    backup_count = 7
+    # 创建日志对象，保存在logs目录下，日志文件名为test.log，日志文件大小为1M，最多保存3个日志文件，日志文件编码为utf-8
+    logger = logging.getLogger(__name__)
+    logger.setLevel(level)
+    # interval=1，每天生成一个日志文件，interval=2，每隔一天生成一个日志文件
+    handler = TimedRotatingFileHandler(log_file, when='midnight', interval=1, backupCount=backup_count,
+                                       encoding='utf-8')
+    # 以时间为归档后缀
+    handler.suffix = "%Y-%m-%d-%H.%M.%S"
+    # 设置日志格式
+    formatter = logging.Formatter('%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    # 添加到日志对象中
+    logger.addHandler(handler)
+    return logger
+
+
 def check_number(s):
     """
     判断当前字符串是否数字类型，并返回浮点数
@@ -110,6 +144,19 @@ def check_list(s):
         return None, False
     return None, False
 
+
+def check_bool(s):
+    """
+    检查当前字符串是否布尔类型，并返回布尔值
+    :param s:
+    :return: （布尔值，是否布尔值）
+    """
+    if s.lower() == "true":
+        return True, True
+    elif s.lower() == "false":
+        return False, True
+    else:
+        return None, False
 
 class Cluster:
     def __init__(self, cluster_name, user, version, path, private_key):
@@ -244,13 +291,5 @@ def _find_json_strings(text):
 
 
 if __name__ == "__main__":
-    # 查看所有集群的prometheus节点是否备份成功
-    for cluster in list_clusters():
-        cname = cluster.cluster_name
-        shell_cmd = "df -h /data"
-        cmd = f"tiup cluster exec {cname} -R prometheus --command '{shell_cmd}'"
-        result, recode = command_run(cmd, stderr_to_stdout=False)
-        if recode != 0:
-            raise Exception(result)
-        for ip, ip_result in _tiup_exec_result_to_list(result):
-            print(f"IP:{ip},result:{ip_result},end!")
+    log = get_logger("test.log", logging.INFO)
+    log.info("hello world")
