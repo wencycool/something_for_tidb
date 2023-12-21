@@ -158,6 +158,31 @@ def check_bool(s):
     else:
         return None, False
 
+def check_ip(s):
+    """
+    检查当前字符串是否IP地址，并返回IP地址
+    :param s:
+    :return: （IP地址，是否IP地址）
+    """
+    if re.match(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', s):
+        return s, True
+    else:
+        return None, False
+
+def check_dict(s):
+    """
+    检查当前字符串是否字典类型，并返回字典
+    :param s:
+    :return: （字典，是否字典）
+    """
+    try:
+        result = ast.literal_eval(s)
+        if isinstance(result, dict):
+            return result, True
+    except (SyntaxError, ValueError):
+        return None, False
+    return None, False
+
 class Cluster:
     def __init__(self, cluster_name, user, version, path, private_key):
         self.cluster_name = cluster_name
