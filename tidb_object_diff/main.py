@@ -202,6 +202,22 @@ def get_variable_map(conn: pymysql.connect) -> Dict[str, Variable]:
     return var_map
 
 
+class Binding:
+    def __init__(self, original_sql, bind_sql):
+        self.original_sql = original_sql
+        self.bind_sql = bind_sql
+
+def get_binding_map(conn: pymysql.connect) -> Dict[str, Binding]:
+    binding_map = {}
+    cursor = conn.cursor(pymysql.cursors.Cursor)
+    cursor.execute(
+        f"select original_sql,bind_sql from mysql.bind_info ;")
+    for row in cursor.fetchall():
+        binding_map[row[0]] = Binding(original_sql=row[0], bind_sql=row[1])
+    cursor.close()
+    return binding_map
+
+
 # 判断两个对象中的变量值是否完全一致
 def compare_objects(obj1, obj2) -> bool:
     # 获取对象的所有属性
@@ -278,8 +294,16 @@ def check(args):
     print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
     for k, v in get_map_diff(src_sequence_map, tgt_sequence_map).items():
         print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
-    src_user_map = get_user_map(src_connection)
-    tgt_user_map = get_user_map(tgt_connection)
+
+    # 检查binding
+    logging.info("查看binding差异")
+    src_binding_map = get_binding_map(src_connection)
+    tgt_binding_map = get_binding_map(tgt_connection)
+    k = "[BINDING]"
+    v = ("source", "target", "difference")
+    print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
+    for k, v in get_map_diff(src_binding_map, tgt_binding_map).items():
+        print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
 
     # 检查约束
     logging.info("查看约束差异")

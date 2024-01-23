@@ -2,6 +2,12 @@
 # coding: utf-8
 import pymysql
 import logging as log
+import base64
+
+
+# 将字符串转为base64编码
+def str_to_base64(s):
+    return base64.b64encode(s.encode('utf-8')).decode('utf-8')
 
 
 class Attr:
