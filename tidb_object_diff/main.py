@@ -211,7 +211,7 @@ def get_binding_map(conn: pymysql.connect) -> Dict[str, Binding]:
     binding_map = {}
     cursor = conn.cursor(pymysql.cursors.Cursor)
     cursor.execute(
-        f"select original_sql,bind_sql from mysql.bind_info ;")
+        f"select original_sql,bind_sql from mysql.bind_info where status='enabled' and default_db !='mysql' ;")
     for row in cursor.fetchall():
         binding_map[row[0]] = Binding(original_sql=row[0], bind_sql=row[1])
     cursor.close()
