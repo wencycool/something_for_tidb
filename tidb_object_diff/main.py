@@ -51,7 +51,7 @@ class SimplTable:
 def get_simpltable_map(conn: pymysql.connect, schema_filter: List[str] = []) -> Dict[str, SimplTable]:
     simpl_table_map = {}
     cursor = conn.cursor()
-    where_schema_filter = "where table_schema in (" + ",".join(
+    where_schema_filter = "where table_type in ('BASE TABLE', 'VIEW') and table_schema in (" + ",".join(
         list(map(lambda x: f"'{x}'", schema_filter))) + ")" if len(schema_filter) != 0 else ""
     cursor.execute(
         f"select table_schema,table_name,table_type,tidb_pk_type from information_schema.tables {where_schema_filter};")
