@@ -17,7 +17,7 @@ if sys.version_info < (3, 6):
     raise "python version need larger than 3.6"
 
 
-def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (str, str, int):
+def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (str, int):
     """
 
     :param str command: shell命令
@@ -168,6 +168,34 @@ def check_ip(s):
         return s, True
     else:
         return None, False
+
+def get_local_address(ignore_loopback=True):
+    """
+    查询本地所有IP列表
+    :param ignore_loopback : 是否忽略loopback地址
+    :return: 返回本地所有IP列表
+    """
+    ip_addresses = []
+    # 执行ip a命令获取网络接口信息
+    output, recode = command_run("/usr/sbin/ip a")
+    if recode != 0:
+        msg = f"get local ip failed: {output}"
+        logging.error(msg)
+        raise Exception(msg)
+    # 使用正则表达式匹配IP地址信息
+    ip_pattern = r'\d+\.\d+\.\d+\.\d+/\d+'
+    matches = re.findall(ip_pattern, output)
+    # 将匹配到的IP地址添加到列表中
+    ip_addresses.extend(matches)
+    result = []
+    for each_addr in ip_addresses:
+        if "/" in each_addr:
+            addr = each_addr.split("/")[0]
+            if ignore_loopback and addr.startswith("127.0.0.1"):
+                continue
+            result.append(addr)
+    return result
+
 
 def check_dict(s):
     """
