@@ -149,7 +149,9 @@ def check_bool(s):
     """
     检查当前字符串是否布尔类型，并返回布尔值
     :param s:
+    :type s: str
     :return: （布尔值，是否布尔值）
+    :rtype: (bool,bool)
     """
     if s.lower() == "true":
         return True, True
