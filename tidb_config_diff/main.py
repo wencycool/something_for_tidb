@@ -8,6 +8,7 @@ import argparse
 import getpass
 import sys
 
+
 # 判断python的版本
 if sys.version_info < (3, 7):
     raise Exception("python version need larger than 3.6")
@@ -176,7 +177,8 @@ class TiDBInfo:
         if limit > 0:
             data_with_number = data_with_number[offset:offset + limit]
         sqlite3_conn.close()
-        return tabulate(data_with_number, headers=headers, tablefmt="simple_grid")
+        # 如果单元格内容过长，则换行
+        return tabulate(data_with_number, headers=headers, tablefmt="simple_grid", maxcolwidths=[10, 10, 10, 80, 30, 30], numalign="center")
 
     def insert_tidb_vars(self):
         global sqlite3_conn
@@ -246,8 +248,13 @@ def report(args):
     except Exception as e:
         print(e)
         return
-    print(
-        tidbInfo.report_diff(args.table1, args.table2, ignore_vars=ignore_vars, auto=True, limit=limit, offset=offset))
+    output = args.output
+    result_text = tidbInfo.report_diff(args.table1, args.table2, ignore_vars=ignore_vars, auto=True, limit=limit, offset=offset)
+    if output == "":
+        print(result_text)
+    else:
+        with open(output, "w") as f:
+            f.write(result_text)
 
 
 if __name__ == "__main__":
@@ -261,6 +268,7 @@ if __name__ == "__main__":
     parser_collect.add_argument('-p', '--password', help="密码", nargs="?")
 
     parser_report = subparsers.add_parser("report", help="参数对比输出")
+    parser_report.add_argument('-o', '--output', help="输出文件", default="")
     parser_report.add_argument('-l', '--list-tables', action="store_true", help="打印当前已经完成采集的系统表")
     parser_report.add_argument('--table1', help="对比的第一个表", required=False)
     parser_report.add_argument('--table2', help="对比的第二个表", required=False)
