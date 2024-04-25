@@ -22,14 +22,17 @@ options:
   -p [PASSWORD], --password [PASSWORD]
                         密码
 PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py report -h
-usage: main.py report [-h] [-l] [--table1 TABLE1] [--table2 TABLE2] [--limit LIMIT]
+usage: main.py report [-h] [-t TYPE] [-o OUTPUT] [-l] [--table1 TABLE1] [--table2 TABLE2] [--limit LIMIT]
 
 options:
-  -h, --help         show this help message and exit
-  -l, --list-tables  打印当前已经完成采集的系统表
-  --table1 TABLE1    对比的第一个表
-  --table2 TABLE2    对比的第二个表
-  --limit LIMIT      打印输出行数,默认输出所有行
+  -h, --help            show this help message and exit
+  -t TYPE, --type TYPE  输出类型，支持excel,text,stdout
+  -o OUTPUT, --output OUTPUT
+                        输出文件
+  -l, --list-tables     打印当前已经完成采集的系统表
+  --table1 TABLE1       对比的第一个表
+  --table2 TABLE2       对比的第二个表
+  --limit LIMIT         打印输出行数,默认输出所有行
 
 
 PS E:\PythonProjects\something_for_tidb\tidb_config_diff> python main.py collect -H 192.168.31.201 -P 4000 -u root -p
