@@ -7,16 +7,43 @@ from tabulate import tabulate
 import argparse
 import getpass
 import sys
+import openpyxl
 
 
 # 判断python的版本
-if sys.version_info < (3, 7):
-    raise Exception("python version need larger than 3.6")
+if sys.version_info <= (3, 10):
+    # 进行警告
+    log.warning("python version need larger than 3.10")
 
 # 需要过滤的对比参数名称（variable和config参数名直接写在这里），支持类似于like语句的模糊匹配
 ignore_vars = ["tidb_config", "%urls", "%path%", "%file%", "%addr%", "%log", "%dir", "%endpoints",
                "engine-store.flash.proxy.config", "initial-cluster", "socket", "port", "metric.job",
                "name"]
+
+# 指定导出类型，支持stdout,text,excel
+class OutputType:
+    STDOUT = "stdout"
+    TEXT = "text"
+    EXCEL = "excel"
+
+
+# 将指定的二维数组列表写到excel文件中，并指定宽度，固定表头，可筛选
+def write_to_excel(data, headers, filename, maxcolwidths=None, autofilter=True):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(headers)
+    for row in data:
+        ws.append(row)
+    # 固定表头
+    ws.freeze_panes = "A2"
+    # 设置列宽
+    if maxcolwidths is not None:
+        for i in range(len(maxcolwidths)):
+            ws.column_dimensions[chr(65 + i)].width = maxcolwidths[i]
+    # 设置自动筛选
+    if autofilter:
+        ws.auto_filter.ref = ws.dimensions
+    wb.save(filename)
 
 
 class TiDBInfo:
@@ -79,7 +106,7 @@ class TiDBInfo:
             return True
         return False
 
-    def report_diff(self, table1="", table2="", ignore_vars=[], auto=True, limit=0, offset=0):
+    def report_diff(self, table1="", table2="", ignore_vars=[], auto=True, limit=0, offset=0, type = OutputType.EXCEL,output=""):
         """
         比较两个参数表的差异
         :param auto: 是否自动获取最近2张表并进行差异判断
@@ -177,8 +204,23 @@ class TiDBInfo:
         if limit > 0:
             data_with_number = data_with_number[offset:offset + limit]
         sqlite3_conn.close()
-        # 如果单元格内容过长，则换行
-        return tabulate(data_with_number, headers=headers, tablefmt="simple_grid", maxcolwidths=[10, 10, 10, 80, 30, 30], numalign="center")
+        if type == OutputType.STDOUT:
+            # 如果单元格内容过长，则换行
+            print(tabulate(data_with_number, headers=headers, tablefmt="simple_grid", maxcolwidths=[10, 10, 10, 80, 30, 30], numalign="center"))
+        elif type == OutputType.EXCEL:
+            if output == "":
+                output = f"{table1}_{table2}_diff.xlsx"
+                log.info(f"输出文件:{output}")
+            write_to_excel(data_with_number, headers, output, [10, 10, 10, 80, 30, 30])
+        elif type == OutputType.TEXT:
+            if output == "":
+                output = f"{table1}_{table2}_diff.txt"
+            result_text = tabulate(data_with_number, headers=headers, tablefmt="simple_grid", maxcolwidths=[10, 10, 10, 80, 30, 30], numalign="center")
+            with open(output, "wb") as f:
+                f.write(result_text.encode("utf-8"))
+        else:
+            raise Exception(f"不支持的输出类型:{type}")
+
 
     def insert_tidb_vars(self):
         global sqlite3_conn
@@ -249,12 +291,15 @@ def report(args):
         print(e)
         return
     output = args.output
-    result_text = tidbInfo.report_diff(args.table1, args.table2, ignore_vars=ignore_vars, auto=True, limit=limit, offset=offset)
-    if output == "":
-        print(result_text)
+    output_type = args.type
+    if output_type == OutputType.STDOUT:
+        tidbInfo.report_diff(args.table1, args.table2, ignore_vars=ignore_vars, auto=True, limit=limit, offset=offset, type=OutputType.STDOUT, output="")
+    elif output_type == OutputType.TEXT:
+        tidbInfo.report_diff(args.table1, args.table2, ignore_vars=ignore_vars, auto=True, limit=limit, offset=offset, type=OutputType.TEXT, output=output)
+    elif output_type == OutputType.EXCEL:
+        tidbInfo.report_diff(args.table1, args.table2, ignore_vars=ignore_vars, auto=True, limit=limit, offset=offset, type=OutputType.EXCEL, output=output)
     else:
-        with open(output, "w") as f:
-            f.write(result_text)
+        print(f"不支持的输出类型:{output_type}")
 
 
 if __name__ == "__main__":
@@ -268,13 +313,14 @@ if __name__ == "__main__":
     parser_collect.add_argument('-p', '--password', help="密码", nargs="?")
 
     parser_report = subparsers.add_parser("report", help="参数对比输出")
+    # 输出类型，如果输出到文件则可以指定是输出excel格式还是文本格式
+    parser_report.add_argument('-t', '--type', help="输出类型，支持excel,text,stdout", default="stdout")
     parser_report.add_argument('-o', '--output', help="输出文件", default="")
     parser_report.add_argument('-l', '--list-tables', action="store_true", help="打印当前已经完成采集的系统表")
     parser_report.add_argument('--table1', help="对比的第一个表", required=False)
     parser_report.add_argument('--table2', help="对比的第二个表", required=False)
     parser_report.add_argument('--limit', help="打印输出行数,默认输出所有行", default="0", type=str)
     args = parser.parse_args()
-    # log.basicConfig(level=log.DEBUG)
 
     if args.subcommand == "collect":
         collect(args)
