@@ -22,7 +22,7 @@ if not isV3:
     raise Exception("python version need larger than 3.6")
 
 # return: result,recode
-def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (str, int):
+def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True):
     """
 
     :param str command: shell命令
@@ -30,6 +30,7 @@ def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (
     :param int timeout: 函数执行超时时间
     :param stderr_to_stdout: 是否将错误输出合并到stdout中
     :return: 结果集和code
+    :rtype: (str, int)
     """
 
     def _str(input):
