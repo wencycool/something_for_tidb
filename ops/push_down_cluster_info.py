@@ -7,22 +7,34 @@ import tempfile
 import threading
 import socket
 import logging
-#在tiup中控机中执行该脚本，向集群中各个节点的/db/dbawork/info中写入 cluster.info说明文件，主要记录tiup cluster display信息
-#方便每一个节点都能清楚的知道其tiup中控机是谁，节点的其余节点是谁。
-#注意：集群中的任意一个节点所在OS只能属于该集群，否则可能会导致/db/dbawork/info中的cluster.info信息被覆盖。
+
+# 在tiup中控机中执行该脚本，向集群中各个节点的/db/dbawork/info中写入 cluster.info说明文件，主要记录tiup cluster display信息
+# 方便每一个节点都能清楚的知道其tiup中控机是谁，节点的其余节点是谁。
+# 注意：集群中的任意一个节点所在OS只能属于该集群，否则可能会导致/db/dbawork/info中的cluster.info信息被覆盖。
 #     直接取名叫cluster.info而并不是<cluster>.info以集群名称命名的主要原因是避免修改集群名称后导致在目录中看到多个集群info文件。
-#放入crontab中时候必须引入用户环境变量
-#每天晚上03点执行一次
-#00 03 * * *  . /home/tidb/.bash_profile && /usr/bin/python xxx.py
+# 放入crontab中时候必须引入用户环境变量
+# 每天晚上03点执行一次
+# 00 03 * * *  . /home/tidb/.bash_profile && /usr/bin/python xxx.py
 # 判断python的版本
 isV3 = float(sys.version[:3]) > 2.7
-#return: result,recode
-def command_run(command, use_temp=False, timeout=30):
+
+if not isV3:
+    raise Exception("python version need larger than 3.6")
+
+# return: result,recode
+def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (str, int):
+    """
+
+    :param str command: shell命令
+    :param bool use_temp: 是否使用临时文件存储结果集，对于大结果集处理有效
+    :param int timeout: 函数执行超时时间
+    :param stderr_to_stdout: 是否将错误输出合并到stdout中
+    :return: 结果集和code
+    """
+
     def _str(input):
-        if isV3:
-            if isinstance(input, bytes):
-                return str(input, 'UTF-8')
-            return str(input)
+        if isinstance(input, bytes):
+            return str(input, 'UTF-8')
         return str(input)
 
     mutable = ['', '', None]
@@ -30,14 +42,12 @@ def command_run(command, use_temp=False, timeout=30):
     if use_temp:
         out_temp = None
         out_fileno = None
-        if isV3:
-            out_temp = tempfile.SpooledTemporaryFile(buffering=100 * 1024)
-        else:
-            out_temp = tempfile.SpooledTemporaryFile(bufsize=100 * 1024)
+        out_temp = tempfile.SpooledTemporaryFile(buffering=100 * 1024)
         out_fileno = out_temp.fileno()
 
         def target():
-            mutable[2] = subprocess.Popen(command, stdout=out_fileno, stderr=out_fileno, shell=True)
+            # 标准输出结果集比较大输出到文件，错误输出到PIPE
+            mutable[2] = subprocess.Popen(command, stdout=out_fileno, stderr=subprocess.PIPE, shell=True)
             mutable[2].wait()
 
         th = threading.Thread(target=target)
@@ -54,7 +64,10 @@ def command_run(command, use_temp=False, timeout=30):
             out_temp.seek(0)
             result = out_temp.read()
         out_temp.close()
-        return _str(result), mutable[2].returncode
+        if stderr_to_stdout:
+            return _str(result) + _str(mutable[2].stderr.read()), mutable[2].returncode
+        else:
+            return _str(result), mutable[2].returncode
     else:
         def target():
             mutable[2] = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -68,7 +81,11 @@ def command_run(command, use_temp=False, timeout=30):
             th.join()
             if mutable[2].returncode == 0:
                 mutable[2].returncode = 1
-        return _str(mutable[0]) + _str(mutable[1]), mutable[2].returncode
+        if stderr_to_stdout:
+            return _str(mutable[0]) + _str(mutable[1]), mutable[2].returncode
+        else:
+            return _str(mutable[0]), mutable[2].returncode
+
 
 def check_env():
     result, recode = command_run("command -v tiup")
@@ -76,31 +93,33 @@ def check_env():
         raise Exception("cannot find tiup:%s" % (result))
     return True
 
-#获取tidb集群列表
-#return: cluster_list,err
+
+# 获取tidb集群列表
+# return: cluster_list,err
 def get_tidb_cluster_list():
     cluster_list = []
-    result,recode = command_run("tiup cluster list 2>/dev/null")
+    result, recode = command_run("tiup cluster list 2>/dev/null")
     if recode != 0:
-        return [],recode
+        return [], recode
     else:
         pflag = False
         for each_line in result.split("\n"):
             if each_line.startswith("----"):
                 pflag = True
                 continue
-            if pflag:
-                cluster_list.append(each_line.split([0]))
-        return cluster_list,None
+            if pflag and each_line != "":
+                cluster_list.append(each_line.split()[0])
+        return cluster_list, None
 
-#获取ip和主机名对应关系
-#return:map[ip]hostname,err
+
+# 获取ip和主机名对应关系
+# return:map[ip]hostname,err
 def get_ip_host_map(cluster_name):
     ip_host_map = {}
     cmd = "tiup cluster exec %s --command \"hostname\" 2>/dev/null" % (cluster_name)
-    result,recode = command_run(cmd)
+    result, recode = command_run(cmd)
     if recode != 0:
-        return result,recode
+        return result, recode
     i = 0
     value_line = -99999999
     for each_line in result.split("\n"):
@@ -112,22 +131,24 @@ def get_ip_host_map(cluster_name):
             value_line = i
         if value_line + 1 == i:
             ip_host_map[ip] = each_line
-    return ip_host_map,None
+    return ip_host_map, None
 
-#获取集群display信息
+
+# 获取集群display信息
 def get_cluster_display(cluster_name):
     cmd = "tiup cluster display %s 2>/dev/null" % (cluster_name)
     return command_run(cmd)
 
-#带主机名
+
+# 带主机名
 def get_cluster_display_detail(cluster_name):
     output = ""
-    result,recode = get_cluster_display(cluster_name)
+    result, recode = get_cluster_display(cluster_name)
     if recode != 0:
-        return result,recode
-    ip_host_map,recode = get_ip_host_map(cluster_name)
+        return result, recode
+    ip_host_map, recode = get_ip_host_map(cluster_name)
     if recode is not None:
-        return ip_host_map,recode
+        return ip_host_map, recode
     pflag = False
     for each_line in result.split("\n"):
         if each_line.startswith("ID                    Role"):
@@ -148,19 +169,21 @@ def get_cluster_display_detail(cluster_name):
         if each_line == "":
             continue
         output = output + each_line + "\n"
-    return output,None
+    return output, None
 
-#获取主机名
+
+# 获取主机名
 def get_hostname():
     return socket.gethostname()
 
-#return map[ip]result,err
-def command_run_cluster_exec(cluster_name,command):
+
+# return map[ip]result,err
+def command_run_cluster_exec(cluster_name, command):
     ip_result_map = {}
-    cmd = "tiup cluster exec %s --command \"%s \" 2>/dev/null" % (cluster_name,command)
-    result,recode = command_run(cmd)
+    cmd = "tiup cluster exec %s --command \"%s \" 2>/dev/null" % (cluster_name, command)
+    result, recode = command_run(cmd)
     if recode != 0:
-        return result,recode
+        return result, recode
     i = 0
     value_start = -99999999
     value = ""
@@ -182,8 +205,7 @@ def command_run_cluster_exec(cluster_name,command):
         if pflag:
             value = value + each_line + "\n"
     ip_result_map[ip] = value
-    return ip_result_map,None
-
+    return ip_result_map, None
 
 
 if __name__ == "__main__":
@@ -192,8 +214,8 @@ if __name__ == "__main__":
                         filemode="a",
                         format='%(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s',
                         datefmt='%a, %d %b %Y %H:%M:%S')
-    #proj_name = os.path.realpath(sys.argv[0])
-    cluster_list,err = get_tidb_cluster_list()
+    # proj_name = os.path.realpath(sys.argv[0])
+    cluster_list, err = get_tidb_cluster_list()
     if err is not None:
         logging.error(err)
         exit(1)
@@ -201,35 +223,35 @@ if __name__ == "__main__":
         logging.debug("cluster_name:%s" % (cluster_name))
         file_name = "cluster.info"
         local_dir = "/tmp"
-        local_file = os.path.join(local_dir,file_name)
+        local_file = os.path.join(local_dir, file_name)
         target_dir = "/db/dbawork/info"
         logging.debug("local_dir:%s" % (local_dir))
         logging.debug("local_file:%s" % (local_file))
         logging.debug("target_dir:%s" % (target_dir))
-        result,err = get_cluster_display_detail(cluster_name)
+        result, err = get_cluster_display_detail(cluster_name)
         if err is not None:
             logging.info(str(err))
         for each_line in result.split("\n"):
             logging.debug(each_line)
-        #判断目标文件夹是否存在，目标文件夹的挂载点是否/db/dbawork，属主是否tidb，如果均是才能进行分发
-        result,recode = command_run_cluster_exec(cluster_name,"ls -ld %s ||mkdir %s" % (target_dir,target_dir))
+        # 判断目标文件夹是否存在，目标文件夹的挂载点是否/db/dbawork，属主是否tidb，如果均是才能进行分发
+        result, recode = command_run_cluster_exec(cluster_name, "ls -ld %s ||mkdir %s" % (target_dir, target_dir))
         if recode is not None:
-            result,recode = command_run_cluster_exec(cluster_name,"ls -ld %s" % (target_dir))
+            result, recode = command_run_cluster_exec(cluster_name, "ls -ld %s" % (target_dir))
             if recode is not None:
                 logging.error(result)
                 exit(1)
         logging.debug("get cluster display information with hostname")
-        target_file = os.path.join(target_dir,file_name)
-        result,recode = get_cluster_display_detail(cluster_name)
+        target_file = os.path.join(target_dir, file_name)
+        result, recode = get_cluster_display_detail(cluster_name)
         if recode is not None:
             logging.error(result)
             exit(1)
         logging.debug("save data to %s" % (local_file))
-        with open(local_file,mode='w') as f:
+        with open(local_file, mode='w') as f:
             f.write("tiup hostname:      " + get_hostname() + "\n")
             f.write(result)
         logging.debug("push file to remote:%s" % (target_file))
-        result,recode = command_run("tiup cluster push %s %s %s" % (cluster_name,local_file,target_file))
+        result, recode = command_run("tiup cluster push %s %s %s" % (cluster_name, local_file, target_file))
         if recode != 0:
             logging.error(result)
             exit(1)
