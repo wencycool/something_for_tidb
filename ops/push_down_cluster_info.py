@@ -240,13 +240,13 @@ if __name__ == "__main__":
             result, recode = command_run_cluster_exec(cluster_name, "ls -ld %s" % (target_dir))
             if recode is not None:
                 logging.error(result)
-                exit(1)
+                continue
         logging.debug("get cluster display information with hostname")
         target_file = os.path.join(target_dir, file_name)
         result, recode = get_cluster_display_detail(cluster_name)
         if recode is not None:
             logging.error(result)
-            exit(1)
+            continue
         logging.debug("save data to %s" % (local_file))
         with open(local_file, mode='w') as f:
             f.write("tiup hostname:      " + get_hostname() + "\n")
@@ -255,5 +255,5 @@ if __name__ == "__main__":
         result, recode = command_run("tiup cluster push %s %s %s" % (cluster_name, local_file, target_file))
         if recode != 0:
             logging.error(result)
-            exit(1)
+            continue
         logging.debug("success!")
