@@ -210,7 +210,7 @@ def command_run_cluster_exec(cluster_name, command):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.DEBUG,
+    logging.basicConfig(level=logging.INFO,
                         filename="/tmp/cluster_info.log",
                         filemode="a",
                         format='%(asctime)s %(filename)s[line:%(lineno)d] %(levelname)s %(message)s',
