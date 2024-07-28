@@ -123,7 +123,9 @@ def check_number(s):
     """
     判断当前字符串是否数字类型，并返回浮点数
     :param s:
+    :type s: str
     :return: (数字,是否数字)
+    :rtype: (int|float,bool)
     """
     if re.match(r'^-?\d+$', s):
         return int(s), True
@@ -139,7 +141,9 @@ def check_list(s):
     """
     检查当前字符串是否列表形式，并返回列表
     :param s:
+    :type s: str
     :return: （列表，是否列表）
+    :rtype: (list,bool)
     """
     try:
         result = ast.literal_eval(s)
@@ -170,7 +174,9 @@ def check_ip(s):
     """
     检查当前字符串是否IP地址，并返回IP地址
     :param s:
+    :type s: str
     :return: （IP地址，是否IP地址）
+    :rtype: (str,bool)
     """
     if re.match(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', s):
         return s, True
