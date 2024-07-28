@@ -83,20 +83,25 @@ def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (
 
 
 # 获取日志对象，每天生成一个日志文件，最多保存7个日志文件
-def get_logger(log_file, level: logging.INFO) -> logging.Logger:
+def get_logger(log_file, level: logging.INFO):
     # 生成文档说明
     """
     :param log_file: 日志文件名
-    :param level: 日志级别
-    :return: 日志对象
-
+    :type log_file: str
+    :param level: 日志级别，默认为logging.INFO
+    :type level: int
+    :rtype: logging.Logger
     # 添加示例
     >>> import common
     >>> logger = common.get_logger("test.log", logging.INFO)
     >>> logger.info("test")
 
     """
-
+    if not log_file:
+        # 打印到控制台
+        logging.basicConfig(level=level)
+        logging.basicConfig(format='%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
+        return logging
     backup_count = 7
     # 创建日志对象，保存在logs目录下，日志文件名为test.log，日志文件大小为1M，最多保存3个日志文件，日志文件编码为utf-8
     logger = logging.getLogger(__name__)
@@ -160,6 +165,7 @@ def check_bool(s):
     else:
         return None, False
 
+
 def check_ip(s):
     """
     检查当前字符串是否IP地址，并返回IP地址
@@ -170,6 +176,7 @@ def check_ip(s):
         return s, True
     else:
         return None, False
+
 
 def get_local_address(ignore_loopback=True):
     """
@@ -212,6 +219,7 @@ def check_dict(s):
     except (SyntaxError, ValueError):
         return None, False
     return None, False
+
 
 class Cluster:
     def __init__(self, cluster_name, user, version, path, private_key):
