@@ -154,6 +154,23 @@ def check_list(s):
     return None, False
 
 
+def check_dict(s):
+    """
+    检查当前字符串是否字典类型，并返回字典
+    :param s:
+    :type s: str
+    :return: （字典，是否字典）
+    :rtype: (dict,bool)
+    """
+    try:
+        result = ast.literal_eval(s)
+        if isinstance(result, dict):
+            return result, True
+    except (SyntaxError, ValueError):
+        return None, False
+    return None, False
+
+
 def check_bool(s):
     """
     检查当前字符串是否布尔类型，并返回布尔值
@@ -189,6 +206,7 @@ def get_local_address(ignore_loopback=True):
     查询本地所有IP列表
     :param ignore_loopback : 是否忽略loopback地址
     :return: 返回本地所有IP列表
+    :rtype: list
     """
     ip_addresses = []
     # 执行ip a命令获取网络接口信息
@@ -210,21 +228,6 @@ def get_local_address(ignore_loopback=True):
                 continue
             result.append(addr)
     return result
-
-
-def check_dict(s):
-    """
-    检查当前字符串是否字典类型，并返回字典
-    :param s:
-    :return: （字典，是否字典）
-    """
-    try:
-        result = ast.literal_eval(s)
-        if isinstance(result, dict):
-            return result, True
-    except (SyntaxError, ValueError):
-        return None, False
-    return None, False
 
 
 class Cluster:
