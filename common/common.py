@@ -83,20 +83,25 @@ def command_run(command, use_temp=False, timeout=30, stderr_to_stdout=True) -> (
 
 
 # 获取日志对象，每天生成一个日志文件，最多保存7个日志文件
-def get_logger(log_file, level: logging.INFO) -> logging.Logger:
+def get_logger(log_file, level: logging.INFO):
     # 生成文档说明
     """
     :param log_file: 日志文件名
-    :param level: 日志级别
-    :return: 日志对象
-
+    :type log_file: str
+    :param level: 日志级别，默认为logging.INFO
+    :type level: int
+    :rtype: logging.Logger
     # 添加示例
     >>> import common
     >>> logger = common.get_logger("test.log", logging.INFO)
     >>> logger.info("test")
 
     """
-
+    if not log_file:
+        # 打印到控制台
+        logging.basicConfig(level=level)
+        logging.basicConfig(format='%(asctime)s - %(name)s-%(filename)s[line:%(lineno)d] - %(levelname)s - %(message)s')
+        return logging
     backup_count = 7
     # 创建日志对象，保存在logs目录下，日志文件名为test.log，日志文件大小为1M，最多保存3个日志文件，日志文件编码为utf-8
     logger = logging.getLogger(__name__)
@@ -118,7 +123,9 @@ def check_number(s):
     """
     判断当前字符串是否数字类型，并返回浮点数
     :param s:
+    :type s: str
     :return: (数字,是否数字)
+    :rtype: (int|float,bool)
     """
     if re.match(r'^-?\d+$', s):
         return int(s), True
@@ -134,11 +141,30 @@ def check_list(s):
     """
     检查当前字符串是否列表形式，并返回列表
     :param s:
+    :type s: str
     :return: （列表，是否列表）
+    :rtype: (list,bool)
     """
     try:
         result = ast.literal_eval(s)
         if isinstance(result, list):
+            return result, True
+    except (SyntaxError, ValueError):
+        return None, False
+    return None, False
+
+
+def check_dict(s):
+    """
+    检查当前字符串是否字典类型，并返回字典
+    :param s:
+    :type s: str
+    :return: （字典，是否字典）
+    :rtype: (dict,bool)
+    """
+    try:
+        result = ast.literal_eval(s)
+        if isinstance(result, dict):
             return result, True
     except (SyntaxError, ValueError):
         return None, False
@@ -160,22 +186,27 @@ def check_bool(s):
     else:
         return None, False
 
+
 def check_ip(s):
     """
     检查当前字符串是否IP地址，并返回IP地址
     :param s:
+    :type s: str
     :return: （IP地址，是否IP地址）
+    :rtype: (str,bool)
     """
     if re.match(r'\b(?:\d{1,3}\.){3}\d{1,3}\b', s):
         return s, True
     else:
         return None, False
 
+
 def get_local_address(ignore_loopback=True):
     """
     查询本地所有IP列表
     :param ignore_loopback : 是否忽略loopback地址
     :return: 返回本地所有IP列表
+    :rtype: list
     """
     ip_addresses = []
     # 执行ip a命令获取网络接口信息
@@ -198,20 +229,6 @@ def get_local_address(ignore_loopback=True):
             result.append(addr)
     return result
 
-
-def check_dict(s):
-    """
-    检查当前字符串是否字典类型，并返回字典
-    :param s:
-    :return: （字典，是否字典）
-    """
-    try:
-        result = ast.literal_eval(s)
-        if isinstance(result, dict):
-            return result, True
-    except (SyntaxError, ValueError):
-        return None, False
-    return None, False
 
 class Cluster:
     def __init__(self, cluster_name, user, version, path, private_key):

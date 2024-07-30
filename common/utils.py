@@ -6,16 +6,21 @@ def with_timeout(timeout, func, *args, **kwargs):
     """
     给函数添加超时处理，超过timeout秒则抛出异常，用于控制当前脚本核心函数的执行时间
     内存控制最大为5GB，超过5GB会抛出MemoryError
-    :param timeout:超时时间（秒）
-    :type timeout:int
-    :param func:
+
+    :param timeout: 超时时间，单位为秒
+    :type timeout: int
+    :param func: 待执行的函数
     :type func: function
-    :param args:
+    :param args: 函数位置参数
     :type args: tuple
-    :param kwargs:
+    :param kwargs: 函数关键字参数
     :type kwargs: dict
-    :return:
     :rtype: None
+    :Examples:
+    >>> def sample_function(x, y):
+    >>>     return x + y
+    >>> with_timeout(1, sample_function, 1, 2)
+    3
     """
     if not sys.platform == 'linux':
         return func(*args, **kwargs)
@@ -38,3 +43,5 @@ def with_timeout(timeout, func, *args, **kwargs):
         log.warning(f"analyze failed, error: {e}")
     finally:
         signal.alarm(0)
+
+
