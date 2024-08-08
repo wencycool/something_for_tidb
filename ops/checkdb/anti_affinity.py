@@ -11,7 +11,13 @@ class ECSInfo:
     定义虚拟机信息类，用户查找虚拟机的主机名和IP
     """
 
-    def __init__(self, vm_hostname: str, vm_ip: str, physical_hostname: str, physical_ip: str):
+    def __init__(self, vm_hostname, vm_ip, physical_hostname, physical_ip):
+        """
+        :type vm_hostname: str
+        :type vm_ip: str
+        :type physical_hostname: str
+        :type physical_ip: str
+        """
         self.vm_hostname = vm_hostname
         self.vm_ip = vm_ip
         self.physical_hostname = physical_hostname
@@ -23,7 +29,13 @@ class TiDBClusterInfo:
     定义TiDB集群信息类
     """
 
-    def __init__(self, cluster_name: str, version: str, location_labels: List[str], isolation_level: str):
+    def __init__(self, cluster_name, version, location_labels, isolation_level):
+        """
+        :type cluster_name: str
+        :type version: str
+        :type location_labels: List[str]
+        :type isolation_level: str
+        """
         self.cluster_name = cluster_name  # 集群名称
         self.version = version  # 集群版本
         self.location_labels = location_labels  # 集群拓扑层级
@@ -49,7 +61,14 @@ class TiDBRoleInfo:
     定义TiDB角色信息类
     """
 
-    def __init__(self, role_type: str, role_id: str, host_ip: str, labels: Dict[str, str], ecs_info: ECSInfo):
+    def __init__(self, role_type, role_id, host_ip, labels, ecs_info):
+        """
+        :type role_type: str
+        :type role_id: str
+        :type host_ip: str
+        :type labels: Dict[str, str]
+        :type ecs_info: ECSInfo
+        """
         self.role_type = role_type  # 角色类型
         self.role_id = role_id  # 角色ID
         self.host_ip = host_ip  # 主机IP
@@ -57,27 +76,39 @@ class TiDBRoleInfo:
         self.ecs_info = ecs_info  # 虚拟机信息
 
 
-# 基础校验规则类
 class AntiAffinityRule(ABC):
     @abstractmethod
-    def check(self, cluster_info: TiDBClusterInfo) -> List[str]:
+    def check(self, cluster_info):
+        """
+        :type cluster_info: TiDBClusterInfo
+        :rtype: List[str]
+        """
         pass
 
 
 # TiDB节点的反亲和规则实现
 class TiDBAntiAffinityRule(AntiAffinityRule):
-    def check(self, cluster_info: TiDBClusterInfo) -> List[str]:
+    def check(self, cluster_info):
+        """
+        :type cluster_info: TiDBClusterInfo
+        :rtype: List[str]
+        """
         violations = []
         tidb_nodes = cluster_info.roles.get(RoleType.TIDB, [])
         physical_hosts = set(node.ecs_info.physical_hostname for node in tidb_nodes)
         if len(physical_hosts) < 2:
             violations.append("TiDB nodes are not spread across at least 2 physical hosts.")
+        # todo 添加更多规则
         return violations
 
 
 # PD节点的反亲和规则实现
 class PDAntiAffinityRule(AntiAffinityRule):
-    def check(self, cluster_info: TiDBClusterInfo) -> List[str]:
+    def check(self, cluster_info):
+        """
+        :type cluster_info: TiDBClusterInfo
+        :rtype: List[str]
+        """
         violations = []
         pd_nodes = cluster_info.roles.get(RoleType.PD, [])
         physical_hosts = set(node.ecs_info.physical_hostname for node in pd_nodes)
@@ -92,13 +123,18 @@ class PDAntiAffinityRule(AntiAffinityRule):
 
 # TiKV节点的反亲和规则实现
 class TiKVAntiAffinityRule(AntiAffinityRule):
-    def check(self, cluster_info: TiDBClusterInfo) -> List[str]:
+    def check(self, cluster_info):
+        """
+        :type cluster_info: TiDBClusterInfo
+        :rtype: List[str]
+        """
         violations = []
         tikv_nodes = cluster_info.roles.get(RoleType.TIKV, [])
         for node in tikv_nodes:
             if node.labels.get(cluster_info.isolation_level) != node.ecs_info.physical_hostname:
                 violations.append(
                     f"TiKV node {node.role_id} on host {node.ecs_info.physical_hostname} violates the isolation level.")
+        # todo 添加更多规则
         return violations
 
 
@@ -109,10 +145,14 @@ class AntiAffinityChecker:
             RoleType.TIDB: TiDBAntiAffinityRule(),
             RoleType.PD: PDAntiAffinityRule(),
             RoleType.TIKV: TiKVAntiAffinityRule(),
-            # 可以根据需要继续添加规则
+            # todo 添加tiflash规则
         }
 
-    def check(self, cluster_info: TiDBClusterInfo) -> Dict[str, List[str]]:
+    def check(self, cluster_info):
+        """
+        :type cluster_info: TiDBClusterInfo
+        :rtype: Dict[str, List[str]]
+        """
         violations = {}
         for role_type, rule in self.rules.items():
             if role_type in cluster_info.roles:
