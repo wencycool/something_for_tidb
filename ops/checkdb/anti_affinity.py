@@ -29,17 +29,19 @@ class TiDBClusterInfo:
     定义TiDB集群信息类
     """
 
-    def __init__(self, cluster_name, version, location_labels, isolation_level):
+    def __init__(self, cluster_name, version, location_labels, isolation_level, max_replicas):
         """
         :type cluster_name: str
         :type version: str
         :type location_labels: List[str]
         :type isolation_level: str
+        :type max_replicas: int
         """
         self.cluster_name = cluster_name  # 集群名称
         self.version = version  # 集群版本
         self.location_labels = location_labels  # 集群拓扑层级
         self.isolation_level = isolation_level  # 最小强制拓扑隔离级别
+        self.max_replicas = max_replicas
         self.roles: Dict[str, List['TiDBRoleInfo']] = {}  # 角色信息
 
     def add_role_info(self, role_info: 'TiDBRoleInfo'):
@@ -95,10 +97,17 @@ class TiDBAntiAffinityRule(AntiAffinityRule):
         """
         violations = []
         tidb_nodes = cluster_info.roles.get(RoleType.TIDB, [])
+        # 计算当前集群该类型节点占用的物理机数量（去重后）
         physical_hosts = set(node.ecs_info.physical_hostname for node in tidb_nodes)
         if len(physical_hosts) < 2:
             violations.append("TiDB nodes are not spread across at least 2 physical hosts.")
-        # todo 添加更多规则
+        # 均衡原则，M个tidb节点，N个物理机，那么每台物理机上的tidb节点数目不超过M/N+1。
+        for host in physical_hosts:
+            # count 是指定host上的tidb节点数目
+            count = sum(1 for node in tidb_nodes if node.ecs_info.physical_hostname == host)
+            if count > len(tidb_nodes) // len(physical_hosts) + 1:
+                violations.append(
+                    f"More than {(len(tidb_nodes) // len(physical_hosts) + 1)} TiDB nodes on the same host: {host}.")
         return violations
 
 
@@ -115,6 +124,7 @@ class PDAntiAffinityRule(AntiAffinityRule):
         if len(physical_hosts) < 3:
             violations.append("PD nodes are not spread across at least 3 physical hosts.")
         for host in physical_hosts:
+            # count 是指定host上的pd节点数目
             count = sum(1 for node in pd_nodes if node.ecs_info.physical_hostname == host)
             if count > 1:
                 violations.append(f"More than one PD node on the same host: {host}.")
@@ -130,11 +140,36 @@ class TiKVAntiAffinityRule(AntiAffinityRule):
         """
         violations = []
         tikv_nodes = cluster_info.roles.get(RoleType.TIKV, [])
-        for node in tikv_nodes:
-            if node.labels.get(cluster_info.isolation_level) != node.ecs_info.physical_hostname:
+        # tikv节点至少分布在等于副本数个数的物理机上，如：最常用的3副本，那么宿主机应该至少有3个
+        physical_hosts = set(node.ecs_info.physical_hostname for node in tikv_nodes)
+        if len(physical_hosts) < cluster_info.max_replicas:
+            violations.append(f"TiKV nodes are not spread across at least {cluster_info.max_replicas} physical hosts.")
+        # 均衡原则：M个tikv节点，N个物理机，那么每台物理机上的tikv节点数目不超过M/N+1。
+        for host in physical_hosts:
+            count = sum(1 for node in tikv_nodes if node.ecs_info.physical_hostname == host)
+            if count > len(tikv_nodes) // len(physical_hosts) + 1:
                 violations.append(
-                    f"TiKV node {node.role_id} on host {node.ecs_info.physical_hostname} violates the isolation level.")
-        # todo 添加更多规则
+                    f"More than {(len(tikv_nodes) // len(physical_hosts) + 1)} TiKV nodes on the same host: {host}.")
+        # 副本反亲和原则：每一个tikv节点的label利用isolation-level查找到tidb反亲和的层级，这个层级标记在同一个物理机上必须相同。
+        isolation_level_in_lables = True
+        for node in tikv_nodes:
+            if cluster_info.isolation_level not in node.labels:
+                isolation_level_in_lables = False
+                # 一台物理机上不能有多个node节点
+                count = sum(1 for n in tikv_nodes if n.ecs_info.physical_hostname == node.ecs_info.physical_hostname)
+                if count > 1:
+                    violations.append(f"More than one TiKV node on the same host: {node.ecs_info.physical_hostname}.")
+        if isolation_level_in_lables:
+            for host in physical_hosts:
+                try:
+                    idx = cluster_info.location_labels.index(cluster_info.isolation_level)
+                except ValueError:
+                    violations.append(f"Isolation level {cluster_info.isolation_level} not found in location labels.")
+                    continue
+                labels = set(",".join(cluster_info.location_labels[0:idx]) for node in tikv_nodes if
+                             node.ecs_info.physical_hostname == host)
+                if len(labels) > 1:
+                    violations.append(f"TiKV nodes on the same host {host} have different isolation level.")
         return violations
 
 
@@ -187,7 +222,8 @@ def main():
         cluster_name="test-cluster",
         version="v6.1.0",
         location_labels=pd_config['replication']['location-labels'],
-        isolation_level=pd_config['replication']['isolation-level']
+        isolation_level=pd_config['replication']['isolation-level'],
+        max_replicas=pd_config['replication']['max-replicas']
     )
 
     # 添加集群节点信息
