@@ -29,13 +29,14 @@ class TiDBClusterInfo:
     定义TiDB集群信息类
     """
 
-    def __init__(self, cluster_name, version, location_labels, isolation_level, max_replicas):
+    def __init__(self, cluster_name, version, location_labels, isolation_level, max_replicas,tikv_lables):
         """
         :type cluster_name: str
         :type version: str
         :type location_labels: List[str]
         :type isolation_level: str
         :type max_replicas: int
+        :type tikv_lables: Dict[str, str] # tikv节点的标签，key是tikv节点的id，value是tikv节点的标签
         """
         self.cluster_name = cluster_name  # 集群名称
         self.version = version  # 集群版本
@@ -43,6 +44,7 @@ class TiDBClusterInfo:
         self.isolation_level = isolation_level  # 最小强制拓扑隔离级别
         self.max_replicas = max_replicas
         self.roles: Dict[str, List['TiDBRoleInfo']] = {}  # 角色信息
+        self.tikv_lables = tikv_lables
 
     def add_role_info(self, role_info: 'TiDBRoleInfo'):
         if role_info.role_type not in self.roles:
@@ -172,6 +174,21 @@ class TiKVAntiAffinityRule(AntiAffinityRule):
                     violations.append(f"TiKV nodes on the same host {host} have different isolation level.")
         return violations
 
+# lables 检查
+class LablesAntiAffinityRule(AntiAffinityRule):
+    def check(self, cluster_info):
+        """
+        :type cluster_info: TiDBClusterInfo
+        :rtype: List[str]
+        """
+        violations = []
+        tikv_lables = cluster_info.tikv_lables
+        # 所有tikv节点标签必须包含location-labels中的所有标签
+        for node_id, lables in tikv_lables.items():
+            for each_local_label in cluster_info.location_labels:
+                if each_local_label not in lables:
+                    violations.append(f"TiKV node {node_id} does not contain location label {each_local_label}.")
+        return violations
 
 # 反亲和校验器
 class AntiAffinityChecker:
