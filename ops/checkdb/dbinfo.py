@@ -2,23 +2,30 @@ import logging
 from datetime import datetime
 import pymysql
 from typing import List
+import traceback
 from utils import set_max_memory
 from duplicate_index import Index, get_tableindexes, CONST_DUPLICATE_INDEX, CONST_SUSPECTED_DUPLICATE_INDEX
+
 # 关键字，实例变量不能使用这些关键字
-KEYWORDS = ["table_name", "fields"]
+KEYWORDS = ["class_to_table_name", "fields"]
+LONG_VARCHAR_TABLE_COLUMNS = ["plan", "query"]  # 实例变量是字符串，如果值长度比较长，创建表结构时需要特殊处理
 
 
 # 创建基类，用于生成建表语句和insert语句，让其它类继承，表名是类名，字段名是类的属性名，如果属性类型是字符串则默认是varchar(255)，如果是整数则默认是int，如果是浮点数则默认是float，如果是布尔值则默认是tinyint，如果是时间类型则默认是datetime，如果是字典则默认是json，如果是列表则默认是text
 class BaseTable:
     def __init__(self):
-        self.table_name = self.__class__.__name__.lower()
+        self.class_to_table_name = self.__class__.__name__.lower()
         self.fields = {}
         # 字段排除这里基表定义的变量，以及系统变量
         for key, value in self.__dict__.items():
-            if key in ["table_name", "fields"]:
+            if key in ["class_to_table_name", "fields"]:
                 continue
             if isinstance(value, str):
-                self.fields[key] = "varchar(255)"
+                # 对超长字段做特殊处理
+                if key in LONG_VARCHAR_TABLE_COLUMNS:
+                    self.fields[key] = "text"
+                else:
+                    self.fields[key] = "varchar(512)"  # variable的optimizer_switch字段比较长，这里要支持
             elif isinstance(value, int):
                 self.fields[key] = "int"
             elif isinstance(value, float):
@@ -36,7 +43,7 @@ class BaseTable:
                 self.fields[key] = "datetime"
 
     def create_table_sql(self):
-        sql = f"create table if not exists {self.table_name} ("
+        sql = f"create table if not exists {self.class_to_table_name} ("
         for key, value in self.fields.items():
             sql += f"{key} {value},"
         sql = sql[:-1] + ")"
@@ -47,23 +54,26 @@ class BaseTable:
         生成插入语句,默认插入所有字段，值为每实例变量的值
         :return:
         """
-        sql = f"insert into {self.table_name} ("
+        sql = f"insert into {self.class_to_table_name} ("
         for key in self.fields.keys():
             sql += f"{key},"
         sql = sql[:-1] + ") values ("
         for key, value in self.__dict__.items():
-            if key in ["table_name", "fields"]:
+            if key in ["class_to_table_name", "fields"]:
                 continue
             if isinstance(value, str):
-                sql += f"'{value}',"
+                # 对字符串进行转义
+                v = value.replace("'", "''")
+                sql += f"'{v}',"
             elif isinstance(value, bool):
                 sql += f"{int(value)},"
             elif isinstance(value, list) or isinstance(value, dict):
                 # 列表转为\n分隔的字符串
-                v = ",".join(value)
+                v = ",".join(value).replace("'", "''")
                 sql += f"'{v}',"
             elif hasattr(value, "__str__"):
-                sql += f"'{value.__str__()}',"
+                v = value.__str__().replace("'", "''")
+                sql += f"'{v}',"
             else:
                 sql += f"{value},"
         sql = sql[:-1] + ")"
@@ -283,8 +293,8 @@ class SlowQuery(BaseTable):
         super().__init__()
 
 
-# 获取慢查询信息
-def get_slow_query_info(conn, start_time, end_time):
+# 获取慢查询信息,默认查询最近一天的慢查询
+def get_slow_query_info(conn, start_time=None, end_time=None):
     """
     获取慢查询信息
     :param conn: 数据库连接
@@ -303,14 +313,16 @@ def get_slow_query_info(conn, start_time, end_time):
     # +----------------------------+
     # 1 row in set (0.01 sec)
     # 将时间转换为字符串用于SQL查询
-    start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
-    end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
-    if start_time >= end_time or not start_time or not end_time:
+    if not start_time or not end_time or start_time >= end_time:
         # 查询最近一天的慢查询
         start_time_str = "adddate(now(),INTERVAL -1 DAY)"
         end_time_str = "now()"
+    else:
+        start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+        end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
     slow_queries = []
     # get from https://tidb.net/blog/90e27aa0
+    # Binary_plan在v6.5才开始引入，所以这里不做处理
     slow_query_sql = f"""
     WITH ss AS
     (SELECT s.Digest ,s.Plan_digest,
@@ -389,6 +401,51 @@ def get_slow_query_info(conn, start_time, end_time):
     return slow_queries
 
 
+# 将所有的函数输出写到sqlite3的数据表中
+
+def SaveData(conn, callback, *args, **kwargs):
+    """
+    将所有的函数输出写到sqlite3的数据表中
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :param callback: 回调函数
+    :type callback: Callable[[pymysql.connections.Connection], List[BaseTable]]
+    :param args: callback的参数
+    :type args: Any
+    :param kwargs: callback的参数
+    :type kwargs: Any
+    :rtype: bool
+    """
+    try:
+        rows = callback(conn, *args, **kwargs)
+        logging.debug(f"Get data from callback[{callback.__name__}]: {len(rows)}")
+        cursor = conn.cursor()
+        table_created = False
+        # 500条数据一次提交
+        batch_size = 500
+        for (i, row) in enumerate(rows):
+            try:
+                if not table_created:
+                    create_table_sql = row.create_table_sql()
+                    # logging.debug(f"Create table sql: {create_table_sql}")
+                    cursor.execute(create_table_sql)
+                    table_created = True
+                cursor.execute(row.insert_sql())
+                if i != 0 and i % batch_size == 0:
+                    # logging.debug(f"insert sql: {row.insert_sql()}")
+                    conn.commit()
+            except Exception as e:
+                logging.error(
+                    f"Save data failed: {e}, {traceback.format_exc()}, {row.create_table_sql()}, {row.insert_sql()}")
+                return False
+        conn.commit()
+        cursor.close()
+        return True
+    except Exception as e:
+        logging.error(f"Save data failed: {e}, {traceback.format_exc()}")
+        return False
+
+
 if __name__ == "__main__":
     # 打印日志到终端，打印行号，日期等
     logging.basicConfig(level=logging.DEBUG,
@@ -396,7 +453,20 @@ if __name__ == "__main__":
     set_max_memory()
     conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",
                            database="information_schema")
-    variables = get_variables(conn)
+    out_conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",
+                               database="test")
+    SaveData(out_conn, get_variables)
+    SaveData(out_conn, get_column_collations)
+    SaveData(out_conn, get_user_privileges)
+    SaveData(out_conn, get_node_versions)
+    from datetime import timedelta
+
+    SaveData(out_conn, get_slow_query_info, datetime.now() - timedelta(days=10), datetime.now())  # 默认查询最近一天的慢查询
+    SaveData(out_conn, get_duplicate_indexes)
+    conn.close()
+    out_conn.close()
+
+    """variables = get_variables(conn)
     for variable in variables:
         print(f"{variable.type} {variable.name} {variable.value}")
     collations = get_column_collations(conn)
@@ -420,4 +490,4 @@ if __name__ == "__main__":
             f"{duplicate_index.table_schema} {duplicate_index.table_name} {duplicate_index.index_name} {','.join(duplicate_index.columns)}")
         print(duplicate_index.create_table_sql())
         print(duplicate_index.insert_sql())
-    conn.close()
+    conn.close()"""
