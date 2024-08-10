@@ -19,13 +19,16 @@ class Index:
     """
 
     def __init__(self):
-        self.covered_by: Index = None  # 这里保存的是随机找到的一个覆盖该索引的索引，NOTE：不查找root索引的原因是root索引是动态的，比如这里认定的root索引，当”被认为的root
-        # 索引“还有root索引时则这里的判断是错误的，为避免复杂度，这里简化处理。什么是root索引：比如当前索引A被索引B覆盖，B被C覆盖，那么A的root索引是C
         self.state = CONST_UNMARKED
         self.table_schema = ""
         self.table_name = ""
         self.index_name = ""
         self.columns: List[str] = []  # 索引列，索引列的顺序即为索引的顺序，NOTE：这里不包括字段的排序方式，即ASC/DESC
+        self.covered_by: Index = None  # 这里保存的是随机找到的一个覆盖该索引的索引，NOTE：不查找root索引的原因是root索引是动态的，比如这里认定的root索引，当”被认为的root
+        # 索引“还有root索引时则这里的判断是错误的，为避免复杂度，这里简化处理。什么是root索引：比如当前索引A被索引B覆盖，B被C覆盖，那么A的root索引是C
+
+    def __str__(self):
+        return f"schema:{self.table_schema},table:{self.table_name},index:{self.index_name},columns:{self.columns}"
 
     def is_covered_by(self, index):
         """

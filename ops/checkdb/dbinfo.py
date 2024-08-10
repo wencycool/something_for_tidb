@@ -3,7 +3,7 @@ from datetime import datetime
 import pymysql
 from typing import List
 from utils import set_max_memory
-
+from duplicate_index import Index, get_tableindexes, CONST_DUPLICATE_INDEX, CONST_SUSPECTED_DUPLICATE_INDEX
 # 关键字，实例变量不能使用这些关键字
 KEYWORDS = ["table_name", "fields"]
 
@@ -28,6 +28,9 @@ class BaseTable:
             elif isinstance(value, dict):
                 self.fields[key] = "text"
             elif isinstance(value, list):
+                self.fields[key] = "text"
+            # 如果是自定义的类则打印__str__方法
+            elif hasattr(value, "__str__"):
                 self.fields[key] = "text"
             else:
                 self.fields[key] = "datetime"
@@ -57,12 +60,44 @@ class BaseTable:
                 sql += f"{int(value)},"
             elif isinstance(value, list) or isinstance(value, dict):
                 # 列表转为\n分隔的字符串
-                v = "\n".join(value)
+                v = ",".join(value)
                 sql += f"'{v}',"
+            elif hasattr(value, "__str__"):
+                sql += f"'{value.__str__()}',"
             else:
                 sql += f"{value},"
         sql = sql[:-1] + ")"
         return sql
+
+
+class DuplicateIndex(BaseTable, Index):
+    def __init__(self):
+        Index.__init__(self)
+        BaseTable.__init__(self)
+
+
+def get_duplicate_indexes(conn):
+    """
+    获取数据库中所有重复索引
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[DuplicateIndex]
+    """
+    duplicate_indexes = []
+    table_indexes = get_tableindexes(conn)
+    for table_index in table_indexes:
+        table_index.analyze_indexes()
+        for index in table_index.indexes:
+            if index.state == CONST_DUPLICATE_INDEX or index.state == CONST_SUSPECTED_DUPLICATE_INDEX:
+                duplicate_index = DuplicateIndex()
+                duplicate_index.table_schema = table_index.table_schema
+                duplicate_index.table_name = table_index.table_name
+                duplicate_index.index_name = index.index_name
+                duplicate_index.columns = index.columns
+                duplicate_index.state = index.state
+                duplicate_index.covered_by = index.covered_by
+                duplicate_indexes.append(duplicate_index)
+    return duplicate_indexes
 
 
 class Variable(BaseTable):
@@ -379,4 +414,10 @@ if __name__ == "__main__":
     for slow_query in slow_queries:
         print(
             f"{slow_query.digest} {slow_query.plan_digest} {slow_query.query} {slow_query.plan} {slow_query.exec_count} {slow_query.succ_count} {slow_query.sum_query_time} {slow_query.avg_query_time} {slow_query.sum_total_keys} {slow_query.avg_total_keys} {slow_query.sum_process_keys} {slow_query.avg_process_keys} {slow_query.min_time} {slow_query.max_time} {slow_query.mem_max} {slow_query.disk_max} {slow_query.avg_result_rows} {slow_query.max_result_rows} {slow_query.plan_from_binding}")
+    duplicate_indexes = get_duplicate_indexes(conn)
+    for duplicate_index in duplicate_indexes:
+        print(
+            f"{duplicate_index.table_schema} {duplicate_index.table_name} {duplicate_index.index_name} {','.join(duplicate_index.columns)}")
+        print(duplicate_index.create_table_sql())
+        print(duplicate_index.insert_sql())
     conn.close()
