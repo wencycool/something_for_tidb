@@ -42,6 +42,9 @@ class BaseTable:
             else:
                 self.fields[key] = "datetime"
 
+    def drop_table_sql(self):
+        return f"drop table if exists {self.class_to_table_name}"
+
     def create_table_sql(self):
         sql = f"create table if not exists {self.class_to_table_name} ("
         for key, value in self.fields.items():
@@ -426,9 +429,9 @@ def SaveData(conn, callback, *args, **kwargs):
         for (i, row) in enumerate(rows):
             try:
                 if not table_created:
-                    create_table_sql = row.create_table_sql()
                     # logging.debug(f"Create table sql: {create_table_sql}")
-                    cursor.execute(create_table_sql)
+                    cursor.execute(row.drop_table_sql())
+                    cursor.execute(row.create_table_sql())
                     table_created = True
                 cursor.execute(row.insert_sql())
                 if i != 0 and i % batch_size == 0:
