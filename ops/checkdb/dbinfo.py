@@ -1,12 +1,76 @@
+import logging
+from datetime import datetime
 import pymysql
 from typing import List
+from utils import set_max_memory
+
+# 关键字，实例变量不能使用这些关键字
+KEYWORDS = ["table_name", "fields"]
 
 
-class Variable:
+# 创建基类，用于生成建表语句和insert语句，让其它类继承，表名是类名，字段名是类的属性名，如果属性类型是字符串则默认是varchar(255)，如果是整数则默认是int，如果是浮点数则默认是float，如果是布尔值则默认是tinyint，如果是时间类型则默认是datetime，如果是字典则默认是json，如果是列表则默认是text
+class BaseTable:
+    def __init__(self):
+        self.table_name = self.__class__.__name__.lower()
+        self.fields = {}
+        # 字段排除这里基表定义的变量，以及系统变量
+        for key, value in self.__dict__.items():
+            if key in ["table_name", "fields"]:
+                continue
+            if isinstance(value, str):
+                self.fields[key] = "varchar(255)"
+            elif isinstance(value, int):
+                self.fields[key] = "int"
+            elif isinstance(value, float):
+                self.fields[key] = "float"
+            elif isinstance(value, bool):
+                self.fields[key] = "tinyint"
+            elif isinstance(value, dict):
+                self.fields[key] = "text"
+            elif isinstance(value, list):
+                self.fields[key] = "text"
+            else:
+                self.fields[key] = "datetime"
+
+    def create_table_sql(self):
+        sql = f"create table if not exists {self.table_name} ("
+        for key, value in self.fields.items():
+            sql += f"{key} {value},"
+        sql = sql[:-1] + ")"
+        return sql
+
+    def insert_sql(self):
+        """
+        生成插入语句,默认插入所有字段，值为每实例变量的值
+        :return:
+        """
+        sql = f"insert into {self.table_name} ("
+        for key in self.fields.keys():
+            sql += f"{key},"
+        sql = sql[:-1] + ") values ("
+        for key, value in self.__dict__.items():
+            if key in ["table_name", "fields"]:
+                continue
+            if isinstance(value, str):
+                sql += f"'{value}',"
+            elif isinstance(value, bool):
+                sql += f"{int(value)},"
+            elif isinstance(value, list) or isinstance(value, dict):
+                # 列表转为\n分隔的字符串
+                v = "\n".join(value)
+                sql += f"'{v}',"
+            else:
+                sql += f"{value},"
+        sql = sql[:-1] + ")"
+        return sql
+
+
+class Variable(BaseTable):
     def __init__(self):
         self.type = ""  # 如果是系统参数则为variable,如果是集群参数则为：tidb,pd,tikv,tiflash
         self.name = ""
         self.value = ""
+        super().__init__()
 
 
 def get_variables(conn):
@@ -41,12 +105,13 @@ def get_variables(conn):
     return variables
 
 
-class ColumnCollation:
+class ColumnCollation(BaseTable):
     def __init__(self):
         self.table_schema = ""
         self.table_name = ""
         self.column_name = ""
         self.collation_name = ""
+        super().__init__()
 
 
 def get_column_collations(conn):
@@ -58,7 +123,8 @@ def get_column_collations(conn):
     """
     collations: List[ColumnCollation] = []
     cursor = conn.cursor()
-    cursor.execute("select table_schema,table_name,column_name,collation_name from information_schema.columns where COLLATION_NAME !='utf8mb4_bin' and table_schema not in ('mysql','INFORMATION_SCHEMA','PERFORMANCE_SCHEMA')")
+    cursor.execute(
+        "select table_schema,table_name,column_name,collation_name from information_schema.columns where COLLATION_NAME !='utf8mb4_bin' and table_schema not in ('mysql','INFORMATION_SCHEMA','PERFORMANCE_SCHEMA')")
     for row in cursor:
         collation = ColumnCollation()
         collation.table_schema = row[0]
@@ -70,11 +136,12 @@ def get_column_collations(conn):
     return collations
 
 
-class UserPrivilege:
+class UserPrivilege(BaseTable):
     def __init__(self):
         self.user = ""
         self.host = ""
         self.privilege: [str] = []  # 按照权限名称排序
+        super().__init__()
 
 
 def get_user_privileges(conn):
@@ -108,14 +175,16 @@ class VersionNotMatchError(Exception):
         self.message = message
 
 
-class NodeVersion:
+class NodeVersion(BaseTable):
     """
     节点版本信息,如果集群中各节点版本不一致，则抛出异常，如果同一节点类型的git_hash不一致，则抛出异常
     """
+
     def __init__(self):
         self.node_type = ""  # 节点类型
         self.version = ""  # 版本号
         self.git_hash = ""  # git hash，用于判断补丁版本
+        super().__init__()
 
 
 def get_node_versions(conn):
@@ -155,10 +224,143 @@ def get_node_versions(conn):
     return versions
 
 
+class SlowQuery(BaseTable):
+    def __init__(self):
+        self.digest = ""
+        self.plan_digest = ""
+        self.query = ""
+        self.plan = ""
+        self.exec_count = 0
+        self.succ_count = 0
+        self.sum_query_time = 0
+        self.avg_query_time = 0
+        self.sum_total_keys = 0
+        self.avg_total_keys = 0
+        self.sum_process_keys = 0
+        self.avg_process_keys = 0
+        self.min_time = ""
+        self.max_time = ""
+        self.mem_max = 0
+        self.disk_max = 0
+        self.avg_result_rows = 0
+        self.max_result_rows = 0
+        self.plan_from_binding = 0
+        super().__init__()
+
+
+# 获取慢查询信息
+def get_slow_query_info(conn, start_time, end_time):
+    """
+    获取慢查询信息
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :param start_time: 慢查询开始时间
+    :type start_time: datetime
+    :param end_time: 慢查询结束时间
+    :type end_time: datetime
+    :rtype: List[SlowQuery]
+    """
+    # mysql> select time from information_schema.cluster_slow_query limit 1;
+    # +----------------------------+
+    # | time                       |
+    # +----------------------------+
+    # | 2024-08-01 20:40:08.948763 |
+    # +----------------------------+
+    # 1 row in set (0.01 sec)
+    # 将时间转换为字符串用于SQL查询
+    start_time_str = start_time.strftime("%Y-%m-%d %H:%M:%S")
+    end_time_str = end_time.strftime("%Y-%m-%d %H:%M:%S")
+    if start_time >= end_time or not start_time or not end_time:
+        # 查询最近一天的慢查询
+        start_time_str = "adddate(now(),INTERVAL -1 DAY)"
+        end_time_str = "now()"
+    slow_queries = []
+    # get from https://tidb.net/blog/90e27aa0
+    slow_query_sql = f"""
+    WITH ss AS
+    (SELECT s.Digest ,s.Plan_digest,
+    count(1) exec_count,
+    sum(s.Succ) succ_count,
+    round(sum(s.Query_time),4) sum_query_time,
+    round(avg(s.Query_time),4) avg_query_time,
+    sum(s.Total_keys) sum_total_keys,
+    avg(s.Total_keys) avg_total_keys,
+    sum(s.Process_keys) sum_process_keys,
+    avg(s.Process_keys) avg_process_keys,
+    min(s.`Time`) min_time,
+    max(s.`Time`) max_time,
+    round(max(s.Mem_max)/1024/1024,4) Mem_max,
+    round(max(s.Disk_max)/1024/1024,4) Disk_max,
+    avg(s.Result_rows) avg_Result_rows,
+    max(s.Result_rows) max_Result_rows,
+    sum(Plan_from_binding) Plan_from_binding
+    FROM information_schema.cluster_slow_query s
+    WHERE s.time>='{start_time_str}'
+    AND s.time<= '{end_time_str}'
+    AND s.Is_internal =0
+    -- AND UPPER(s.query) NOT LIKE '%ANALYZE TABLE%'
+    -- AND UPPER(s.query) NOT LIKE '%DBEAVER%'
+    -- AND UPPER(s.query) NOT LIKE '%ADD INDEX%'
+    -- AND UPPER(s.query) NOT LIKE '%CREATE INDEX%'
+    GROUP BY s.Digest ,s.Plan_digest
+    ORDER BY sum(s.Query_time) desc
+    LIMIT 35)
+    SELECT ss.Digest,         -- SQL Digest
+    ss.Plan_digest,           -- PLAN Digest
+    (SELECT s1.Query FROM information_schema.cluster_slow_query s1 WHERE s1.Digest=ss.digest AND s1.time>=ss.min_time AND s1.time<=ss.max_time LIMIT 1) query,  -- SQL文本
+    (SELECT s2.plan FROM information_schema.cluster_slow_query s2 WHERE s2.Plan_digest=ss.plan_digest AND s2.time>=ss.min_time AND s2.time<=ss.max_time LIMIT 1) plan, -- 执行计划
+    ss.exec_count,            -- SQL总执行次数
+    ss.succ_count,            -- SQL执行成功次数
+    ss.sum_query_time,        -- 总执行时间（秒）
+    ss.avg_query_time,        -- 平均单次执行时间（秒）
+    ss.sum_total_keys,        -- 总扫描key数量
+    ss.avg_total_keys,        -- 平均单次扫描key数量
+    ss.sum_process_keys,      -- 总处理key数量
+    ss.avg_process_keys,      -- 平均单次处理key数量
+    ss.min_time,              -- 查询时间段内第一次SQL执行结束时间
+    ss.max_time,              -- 查询时间段内最后一次SQL执行结束时间
+    ss.Mem_max,               -- 单次执行中内存占用最大值（MB）
+    ss.Disk_max,              -- 单次执行中磁盘占用最大值（MB）
+    ss.avg_Result_rows,       -- 平均返回行数
+    ss.max_Result_rows,       -- 单次最大返回行数
+    ss.Plan_from_binding      -- 走SQL binding的次数
+    FROM ss;
+    """
+    cursor = conn.cursor()
+    cursor.execute(slow_query_sql)
+    for row in cursor:
+        slow_query = SlowQuery()
+        slow_query.digest = row[0]
+        slow_query.plan_digest = row[1]
+        slow_query.query = row[2]
+        slow_query.plan = row[3]
+        slow_query.exec_count = row[4]
+        slow_query.succ_count = row[5]
+        slow_query.sum_query_time = row[6]
+        slow_query.avg_query_time = row[7]
+        slow_query.sum_total_keys = row[8]
+        slow_query.avg_total_keys = row[9]
+        slow_query.sum_process_keys = row[10]
+        slow_query.avg_process_keys = row[11]
+        slow_query.min_time = row[12]
+        slow_query.max_time = row[13]
+        slow_query.mem_max = row[14]
+        slow_query.disk_max = row[15]
+        slow_query.avg_result_rows = row[16]
+        slow_query.max_result_rows = row[17]
+        slow_query.plan_from_binding = row[18]
+        slow_queries.append(slow_query)
+    cursor.close()
+    return slow_queries
+
+
 if __name__ == "__main__":
-    from utils import set_max_memory
+    # 打印日志到终端，打印行号，日期等
+    logging.basicConfig(level=logging.DEBUG,
+                        format="%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s")
     set_max_memory()
-    conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4", database="information_schema")
+    conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",
+                           database="information_schema")
     variables = get_variables(conn)
     for variable in variables:
         print(f"{variable.type} {variable.name} {variable.value}")
@@ -171,11 +373,10 @@ if __name__ == "__main__":
     versions = get_node_versions(conn)
     for version in versions:
         print(f"{version.node_type} {version.version} {version.git_hash}")
-    from slow_query import get_slow_query_info
-    from datetime import datetime
     start_time = datetime.strptime("2024-08-01 20:40:08", "%Y-%m-%d %H:%M:%S")
     end_time = datetime.strptime("2024-08-10 19:40:08", "%Y-%m-%d %H:%M:%S")
     slow_queries = get_slow_query_info(conn, start_time, end_time)
     for slow_query in slow_queries:
-        print(f"{slow_query.digest} {slow_query.plan_digest} {slow_query.query} {slow_query.plan} {slow_query.exec_count} {slow_query.succ_count} {slow_query.sum_query_time} {slow_query.avg_query_time} {slow_query.sum_total_keys} {slow_query.avg_total_keys} {slow_query.sum_process_keys} {slow_query.avg_process_keys} {slow_query.min_time} {slow_query.max_time} {slow_query.mem_max} {slow_query.disk_max} {slow_query.avg_result_rows} {slow_query.max_result_rows} {slow_query.plan_from_binding}")
+        print(
+            f"{slow_query.digest} {slow_query.plan_digest} {slow_query.query} {slow_query.plan} {slow_query.exec_count} {slow_query.succ_count} {slow_query.sum_query_time} {slow_query.avg_query_time} {slow_query.sum_total_keys} {slow_query.avg_total_keys} {slow_query.sum_process_keys} {slow_query.avg_process_keys} {slow_query.min_time} {slow_query.max_time} {slow_query.mem_max} {slow_query.disk_max} {slow_query.avg_result_rows} {slow_query.max_result_rows} {slow_query.plan_from_binding}")
     conn.close()
