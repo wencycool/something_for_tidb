@@ -156,6 +156,8 @@ def get_node_versions(conn):
 
 
 if __name__ == "__main__":
+    from utils import set_max_memory
+    set_max_memory()
     conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4", database="information_schema")
     variables = get_variables(conn)
     for variable in variables:
