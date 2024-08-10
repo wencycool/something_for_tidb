@@ -4,6 +4,7 @@ import pymysql
 from typing import List
 import traceback
 from utils import set_max_memory
+import sqlite3
 from duplicate_index import Index, get_tableindexes, CONST_DUPLICATE_INDEX, CONST_SUSPECTED_DUPLICATE_INDEX
 
 # 关键字，实例变量不能使用这些关键字
@@ -410,8 +411,8 @@ def get_slow_query_info(conn, start_time=None, end_time=None):
 def SaveData(conn, callback, *args, **kwargs):
     """
     将所有的函数输出写到sqlite3的数据表中
-    :param conn: 数据库连接
-    :type conn: pymysql.connections.Connection
+    :param conn: 写入的数据库连接
+    :type conn: sqlite3.Connection
     :param callback: 回调函数
     :type callback: Callable[[pymysql.connections.Connection], List[BaseTable]]
     :param args: callback的参数
@@ -421,7 +422,7 @@ def SaveData(conn, callback, *args, **kwargs):
     :rtype: bool
     """
     try:
-        rows = callback(conn, *args, **kwargs)
+        rows = callback(*args, **kwargs)
         logging.debug(f"Get data from callback[{callback.__name__}]: {len(rows)}")
         cursor = conn.cursor()
         table_created = False
@@ -457,16 +458,17 @@ if __name__ == "__main__":
     set_max_memory()
     conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",
                            database="information_schema")
-    out_conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",
-                               database="test")
-    SaveData(out_conn, get_variables)
-    SaveData(out_conn, get_column_collations)
-    SaveData(out_conn, get_user_privileges)
-    SaveData(out_conn, get_node_versions)
+    out_conn = sqlite3.connect("dbinfo.db")
+    out_conn.text_factory = str
+    # out_conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",database="test")
+    SaveData(out_conn, get_variables, conn)
+    SaveData(out_conn, get_column_collations, conn)
+    SaveData(out_conn, get_user_privileges, conn)
+    SaveData(out_conn, get_node_versions, conn)
     from datetime import timedelta
 
-    SaveData(out_conn, get_slow_query_info, datetime.now() - timedelta(days=10), datetime.now())  # 默认查询最近一天的慢查询
-    SaveData(out_conn, get_duplicate_indexes)
+    SaveData(out_conn, get_slow_query_info, conn , datetime.now() - timedelta(days=10), datetime.now())  # 默认查询最近一天的慢查询
+    SaveData(out_conn, get_duplicate_indexes, conn)
     conn.close()
     out_conn.close()
 
