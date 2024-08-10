@@ -169,4 +169,11 @@ if __name__ == "__main__":
     versions = get_node_versions(conn)
     for version in versions:
         print(f"{version.node_type} {version.version} {version.git_hash}")
+    from slow_query import get_slow_query_info
+    from datetime import datetime
+    start_time = datetime.strptime("2024-08-01 20:40:08", "%Y-%m-%d %H:%M:%S")
+    end_time = datetime.strptime("2024-08-10 19:40:08", "%Y-%m-%d %H:%M:%S")
+    slow_queries = get_slow_query_info(conn, start_time, end_time)
+    for slow_query in slow_queries:
+        print(f"{slow_query.digest} {slow_query.plan_digest} {slow_query.query} {slow_query.plan} {slow_query.exec_count} {slow_query.succ_count} {slow_query.sum_query_time} {slow_query.avg_query_time} {slow_query.sum_total_keys} {slow_query.avg_total_keys} {slow_query.sum_process_keys} {slow_query.avg_process_keys} {slow_query.min_time} {slow_query.max_time} {slow_query.mem_max} {slow_query.disk_max} {slow_query.avg_result_rows} {slow_query.max_result_rows} {slow_query.plan_from_binding}")
     conn.close()
