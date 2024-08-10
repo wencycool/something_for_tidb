@@ -13,4 +13,5 @@ def set_max_memory(max_memory=8 * 1024 * 1024 * 1024):
     except ImportError:
         return
 
+# 将任何一个类转转到sqlite3的数据表
 
