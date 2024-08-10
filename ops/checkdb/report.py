@@ -61,8 +61,17 @@ def header(local=True):
         <title>Interactive Table</title>
         <style>
         .custom-font {
-            font-family: 'Courier New', monospace; /* 设置字体 */ 
+            font-family: 'Courier New', monospace; /* 设置字体 */
             <!--  font-family: 'SimSun', serif; /* 设置为宋体 */ -->
+        }
+        th, td {
+            min-width: 100px; /* 默认宽度 */
+            white-space: nowrap;
+            border: 1px solid #ddd; /* Add border for table cells */
+        }
+        thead th {
+            background-color: #696969; /* 设置标题行背景颜色为真空灰 */
+            color: #ffffff; /* 设置标题字体颜色为白色 */
         }
         </style>
         """ + csss + """
@@ -96,14 +105,6 @@ def header(local=True):
         }
         h2 {
             margin-top: 60px; /* Provide space between the title and the sticky header */
-        }
-        th, td {
-            white-space: nowrap;
-            border: 1px solid #ddd; /* Add border for table cells */
-        }
-        th {
-            cursor: pointer;
-            background-color: #f2f2f2; /* Light grey background for the header */
         }
         table.dataTable thead th, table.dataTable tbody td {
             box-sizing: border-box;
@@ -151,10 +152,33 @@ def footer(local=True):
                 "searching": true,
                 "responsive": true
             });
+            // Set default column width based on the longest cell content
+            $('table.display').each(function() {
+                var table = $(this);
+                table.find('th').each(function(index) {
+                    var maxWidth = 300; // 设置最大宽度
+                    var maxLength = 0;
+                    table.find('tr').each(function() {
+                        var cell = $(this).find('td').eq(index);
+                        if (cell.length) {
+                            var cellText = cell.text();
+                            if (cellText.length > maxLength) {
+                                maxLength = cellText.length;
+                            }
+                        }
+                    });
+                    var width = Math.min(maxLength * 10, maxWidth); // 计算宽度并限制最大宽度
+                    $(this).css('width', width + 'px');
+                });
+            });
             // Enable column resizing using jQuery UI
             $('th').resizable({
                 handles: "e",
-                minWidth: 50
+                minWidth: 100, // 设置最小宽度,
+                resize: function(event, ui) {
+                    var sizerID = "#" + $(this).attr("id") + "-sizer";
+                    $(sizerID).width(ui.size.width);
+                }
             });
         });
         </script>
