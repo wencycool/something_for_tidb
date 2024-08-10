@@ -8,13 +8,14 @@ from duplicate_index import Index, get_tableindexes, CONST_DUPLICATE_INDEX, CONS
 
 # 关键字，实例变量不能使用这些关键字
 KEYWORDS = ["class_to_table_name", "fields"]
-LONG_VARCHAR_TABLE_COLUMNS = ["plan", "query"]  # 实例变量是字符串，如果值长度比较长，创建表结构时需要特殊处理
+# 实例变量是字符串，如果值长度比较长，创建表结构时需要特殊处理
+LONG_VARCHAR_TABLE_COLUMNS = ["plan", "query"]
 
 
-# 创建基类，用于生成建表语句和insert语句，让其它类继承，表名是类名，字段名是类的属性名，如果属性类型是字符串则默认是varchar(255)，如果是整数则默认是int，如果是浮点数则默认是float，如果是布尔值则默认是tinyint，如果是时间类型则默认是datetime，如果是字典则默认是json，如果是列表则默认是text
+# 创建基类，用于生成建表语句和insert语句，让其它类继承
 class BaseTable:
     def __init__(self):
-        self.class_to_table_name = self.__class__.__name__.lower()
+        self.class_to_table_name = "tidb_" + self.__class__.__name__.lower()
         self.fields = {}
         # 字段排除这里基表定义的变量，以及系统变量
         for key, value in self.__dict__.items():
