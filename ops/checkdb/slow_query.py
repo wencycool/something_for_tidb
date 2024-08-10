@@ -1,6 +1,7 @@
 # Desc: 获取慢查询信息
 
 from datetime import datetime
+from typing import List
 
 
 class SlowQuery:
