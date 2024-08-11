@@ -10,7 +10,7 @@ from .duplicate_index import Index, get_tableindexes, CONST_DUPLICATE_INDEX, CON
 # 关键字，实例变量不能使用这些关键字
 KEYWORDS = ["class_to_table_name", "fields"]
 # 实例变量是字符串，如果值长度比较长，创建表结构时需要特殊处理
-LONG_VARCHAR_TABLE_COLUMNS = ["plan", "query"]
+LONG_VARCHAR_TABLE_COLUMNS = ["plan", "query", "table_names", "index_names", "digest_text", "query_sample_text"]
 
 
 # 创建基类，用于生成建表语句和insert语句，让其它类继承
@@ -406,6 +406,95 @@ def get_slow_query_info(conn, start_time=None, end_time=None):
     return slow_queries
 
 
+class StatementHistory(BaseTable):
+    def __init__(self):
+        self.exec_count = 0
+        self.stmt_type = ""
+        self.avg_latency = 0
+        self.instance = ""
+        self.summary_begin_time = ""
+        self.summary_end_time = ""
+        self.first_seen = ""
+        self.last_seen = ""
+        self.digest = ""
+        self.plan_digest = ""
+        self.sum_latency = 0
+        self.avg_mem = 0
+        self.avg_disk = 0
+        self.avg_result_rows = 0
+        self.avg_affected_rows = 0
+        self.avg_processed_keys = 0
+        self.avg_total_keys = 0
+        self.avg_rocksdb_delete_skipped_count = 0
+        self.avg_rocksdb_key_skipped_count = 0
+        self.avg_rocksdb_block_read_count = 0
+        self.schema_name = ""
+        self.table_names = ""
+        self.index_names = ""
+        self.digest_text = ""
+        self.query_sample_text = ""
+        self.prev_sample_text = ""
+        self.plan = ""
+        super().__init__()
+
+
+# 查询当前数据库中INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY表数据
+def get_statement_history(conn, min_latency=50000):
+    """
+    获取数据库中INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY视图中的SQL
+    :param min_latency: 高于该值的SQL才会被返回，单位：微秒
+    :type min_latency: int
+    :param conn: pymysql.connections.Connection
+    :type conn: pymysql.connections.Connection
+    :return: List[StatementHistory]
+    """
+    statement_histories = []
+    statement_history_sql = f"""
+    with top_sql as (select *
+                 from (select *, row_number() over(partition by INSTANCE,SUMMARY_BEGIN_TIME order by EXEC_COUNT desc) as nbr
+                       from INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY
+                       where AVG_LATENCY >= {min_latency}) a -- 超过50ms的SQL
+                 where a.nbr < 30) -- 取每个批次的前30条SQL
+
+    select EXEC_COUNT,STMT_TYPE,AVG_LATENCY,INSTANCE,SUMMARY_BEGIN_TIME,SUMMARY_END_TIME,FIRST_SEEN,LAST_SEEN,DIGEST,PLAN_DIGEST,SUM_LATENCY,AVG_MEM,AVG_DISK,AVG_RESULT_ROWS,AVG_AFFECTED_ROWS,AVG_PROCESSED_KEYS,AVG_TOTAL_KEYS,AVG_ROCKSDB_DELETE_SKIPPED_COUNT,AVG_ROCKSDB_KEY_SKIPPED_COUNT,AVG_ROCKSDB_BLOCK_READ_COUNT,SCHEMA_NAME,TABLE_NAMES,INDEX_NAMES,DIGEST_TEXT,QUERY_SAMPLE_TEXT,PREV_SAMPLE_TEXT,PLAN
+    from top_sql limit 100000 -- 控制最多返回10万条
+    """
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    cursor.execute(statement_history_sql)
+    for row in cursor:
+        statement_history = StatementHistory()
+        statement_history.exec_count = row["EXEC_COUNT"]
+        statement_history.stmt_type = row["STMT_TYPE"]
+        statement_history.avg_latency = row["AVG_LATENCY"]
+        statement_history.instance = row["INSTANCE"]
+        statement_history.summary_begin_time = row["SUMMARY_BEGIN_TIME"]
+        statement_history.summary_end_time = row["SUMMARY_END_TIME"]
+        statement_history.first_seen = row["FIRST_SEEN"]
+        statement_history.last_seen = row["LAST_SEEN"]
+        statement_history.digest = row["DIGEST"]
+        statement_history.plan_digest = row["PLAN_DIGEST"]
+        statement_history.sum_latency = row["SUM_LATENCY"]
+        statement_history.avg_mem = row["AVG_MEM"]
+        statement_history.avg_disk = row["AVG_DISK"]
+        statement_history.avg_result_rows = row["AVG_RESULT_ROWS"]
+        statement_history.avg_affected_rows = row["AVG_AFFECTED_ROWS"]
+        statement_history.avg_processed_keys = row["AVG_PROCESSED_KEYS"]
+        statement_history.avg_total_keys = row["AVG_TOTAL_KEYS"]
+        statement_history.avg_rocksdb_delete_skipped_count = row["AVG_ROCKSDB_DELETE_SKIPPED_COUNT"]
+        statement_history.avg_rocksdb_key_skipped_count = row["AVG_ROCKSDB_KEY_SKIPPED_COUNT"]
+        statement_history.avg_rocksdb_block_read_count = row["AVG_ROCKSDB_BLOCK_READ_COUNT"]
+        statement_history.schema_name = row["SCHEMA_NAME"]
+        statement_history.table_names = row["TABLE_NAMES"]
+        statement_history.index_names = row["INDEX_NAMES"]
+        statement_history.digest_text = row["DIGEST_TEXT"]
+        statement_history.query_sample_text = row["QUERY_SAMPLE_TEXT"]
+        statement_history.prev_sample_text = row["PREV_SAMPLE_TEXT"]
+        statement_history.plan = row["PLAN"]
+        statement_histories.append(statement_history)
+    cursor.close()
+    return statement_histories
+
+
 # 将所有的函数输出写到sqlite3的数据表中
 
 def SaveData(conn, callback, *args, **kwargs):
@@ -467,6 +556,7 @@ if __name__ == "__main__":
     SaveData(out_conn, get_user_privileges, conn)
     SaveData(out_conn, get_node_versions, conn)
     SaveData(out_conn, get_slow_query_info, conn, datetime.now() - timedelta(days=10), datetime.now())  # 默认查询最近一天的慢查询
+    SaveData(out_conn,get_statement_history, conn)
     SaveData(out_conn, get_duplicate_indexes, conn)
     conn.close()
     out_conn.close()

@@ -205,6 +205,7 @@ def report(in_file, out_file):
         "Column Collations": "SELECT * FROM tidb_columncollation",
         "User Privileges": "SELECT * FROM tidb_userprivilege",
         "Slow Queries": "SELECT * FROM tidb_slowquery",
+        "Statement History": "select * from tidb_statementhistory",
         "Duplicate Indexes": "SELECT * FROM tidb_duplicateindex"
     }
 
