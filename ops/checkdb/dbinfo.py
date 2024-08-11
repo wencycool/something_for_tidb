@@ -277,13 +277,10 @@ def get_node_versions(conn):
 class SlowQuery(BaseTable):
     def __init__(self):
         self.digest = ""
-        self.plan_digest = ""
-        self.query = ""
-        self.plan = ""
         self.exec_count = 0
+        self.avg_query_time = 0
         self.succ_count = 0
         self.sum_query_time = 0
-        self.avg_query_time = 0
         self.sum_total_keys = 0
         self.avg_total_keys = 0
         self.sum_process_keys = 0
@@ -295,6 +292,9 @@ class SlowQuery(BaseTable):
         self.avg_result_rows = 0
         self.max_result_rows = 0
         self.plan_from_binding = 0
+        self.plan_digest = ""
+        self.query = ""
+        self.plan = ""
         super().__init__()
 
 
@@ -378,29 +378,29 @@ def get_slow_query_info(conn, start_time=None, end_time=None):
     ss.Plan_from_binding      -- 走SQL binding的次数
     FROM ss;
     """
-    cursor = conn.cursor()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
     cursor.execute(slow_query_sql)
     for row in cursor:
         slow_query = SlowQuery()
-        slow_query.digest = row[0]
-        slow_query.plan_digest = row[1]
-        slow_query.query = row[2]
-        slow_query.plan = row[3]
-        slow_query.exec_count = row[4]
-        slow_query.succ_count = row[5]
-        slow_query.sum_query_time = row[6]
-        slow_query.avg_query_time = row[7]
-        slow_query.sum_total_keys = row[8]
-        slow_query.avg_total_keys = row[9]
-        slow_query.sum_process_keys = row[10]
-        slow_query.avg_process_keys = row[11]
-        slow_query.min_time = row[12]
-        slow_query.max_time = row[13]
-        slow_query.mem_max = row[14]
-        slow_query.disk_max = row[15]
-        slow_query.avg_result_rows = row[16]
-        slow_query.max_result_rows = row[17]
-        slow_query.plan_from_binding = row[18]
+        slow_query.digest = row["Digest"]
+        slow_query.plan_digest = row["Plan_digest"]
+        slow_query.query = row["query"]
+        slow_query.plan = row["plan"]
+        slow_query.exec_count = row["exec_count"]
+        slow_query.succ_count = row["succ_count"]
+        slow_query.sum_query_time = row["sum_query_time"]
+        slow_query.avg_query_time = row["avg_query_time"]
+        slow_query.sum_total_keys = row["sum_total_keys"]
+        slow_query.avg_total_keys = row["avg_total_keys"]
+        slow_query.sum_process_keys = row["sum_process_keys"]
+        slow_query.avg_process_keys = row["avg_process_keys"]
+        slow_query.min_time = row["min_time"]
+        slow_query.max_time = row["max_time"]
+        slow_query.mem_max = row["Mem_max"]
+        slow_query.disk_max = row["Disk_max"]
+        slow_query.avg_result_rows = row["avg_Result_rows"]
+        slow_query.max_result_rows = row["max_Result_rows"]
+        slow_query.plan_from_binding = row["Plan_from_binding"]
         slow_queries.append(slow_query)
     cursor.close()
     return slow_queries
@@ -457,7 +457,8 @@ if __name__ == "__main__":
                         format="%(asctime)s - %(filename)s[line:%(lineno)d] - %(levelname)s: %(message)s")
     set_max_memory()
     conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",
-                           database="information_schema")
+                           database="information_schema",connect_timeout=10,
+                           init_command="set session max_execution_time=30000")
     out_conn = sqlite3.connect("dbinfo.db")
     out_conn.text_factory = str
     # out_conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",database="test")
