@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import pymysql
 from typing import List
 import traceback
@@ -466,9 +466,7 @@ if __name__ == "__main__":
     SaveData(out_conn, get_column_collations, conn)
     SaveData(out_conn, get_user_privileges, conn)
     SaveData(out_conn, get_node_versions, conn)
-    from datetime import timedelta
-
-    SaveData(out_conn, get_slow_query_info, conn , datetime.now() - timedelta(days=10), datetime.now())  # 默认查询最近一天的慢查询
+    SaveData(out_conn, get_slow_query_info, conn, datetime.now() - timedelta(days=10), datetime.now())  # 默认查询最近一天的慢查询
     SaveData(out_conn, get_duplicate_indexes, conn)
     conn.close()
     out_conn.close()
