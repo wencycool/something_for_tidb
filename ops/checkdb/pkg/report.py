@@ -200,13 +200,13 @@ def report(in_file, out_file):
     conn = sqlite3.connect(in_file)
     conn.text_factory = str  # Set character set to UTF-8
     queries = {
-        "Node Versions": "SELECT * FROM tidb_nodeversion",
-        "Variables": "SELECT * FROM tidb_variable",
-        "Column Collations": "SELECT * FROM tidb_columncollation",
-        "User Privileges": "SELECT * FROM tidb_userprivilege",
-        "Slow Queries": "SELECT * FROM tidb_slowquery",
-        "Statement History": "select * from tidb_statementhistory",
-        "Duplicate Indexes": "SELECT * FROM tidb_duplicateindex"
+        "Node Versions": ["SELECT * FROM tidb_nodeversion", "查询每个节点的版本信息，不同类型节点大版本一定相同，相同类型节点git_hash一定相同（节点单独打补丁会有此类问题）"],
+        "Variables": ["SELECT * FROM tidb_variable", "查询tidb的配置信息,包括集群变量和系统全局变量"],
+        "Column Collations": ["SELECT * FROM tidb_columncollation", "查询表字段上的排序规则，如果不是utf8mb4_bin则会列出（可能会导致索引失效）"],
+        "User Privileges": ["SELECT * FROM tidb_userprivilege", "查询用户权限信息，包括用户的权限和角色,多个权限则排序后按照逗号分隔"],
+        "Slow Queries":  ["SELECT * FROM tidb_slowquery", "查询慢查询信息，包括慢查询的sql语句和执行时间，按照Digest和Plan_digest进行分组聚合"],
+        "Statement History": ["select * from tidb_statementhistory", "查询tidb的历史sql语句，包括sql语句和执行时间，选择大于50ms且执行次数top30的语句"],
+        "Duplicate Indexes": ["SELECT * FROM tidb_duplicateindex",  "查询表上的冗余索引，state为DUPLICATE_INDEX表示冗余索引（最左前缀覆盖），state为SUSPECTED_DUPLICATE_INDEX表示疑似冗余索引"],
     }
 
     html_content = header()
@@ -218,10 +218,13 @@ def report(in_file, out_file):
     html_content += "</div>\n"
 
     html_content += "<div class='table-container'>\n"
-    for idx, (title, query) in enumerate(queries.items()):
+    for idx, (title, query_list) in enumerate(queries.items()):
+        query = query_list[0]
+        describe = query_list[1]
         column_names, rows = fetch_data(conn, query)
         table_id = f"table_{idx}"
         html_content += f"<h2 id='{title.replace(' ', '_')}'>{title}</h2>\n"
+        html_content += f"<small style='color: black; font-size: small;'>{describe}</small><br></br>\n"
         html_content += generate_html_table(table_id, column_names, rows)
     html_content += "</div>\n"
     html_content += footer()
