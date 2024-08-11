@@ -8,7 +8,7 @@ class Logger:
     自定义日志类，支持控制台和文件输出，支持颜色
     使用方法说明：
     ```python
-    >>> from logger import Logger as lg
+    >>> from log import Logger as lg
     >>> import logging
 
     >>> # 初始化日志
