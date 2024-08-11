@@ -3,9 +3,9 @@ from datetime import datetime, timedelta
 import pymysql
 from typing import List
 import traceback
-from pkg.utils import set_max_memory
+from .utils import set_max_memory
 import sqlite3
-from pkg.duplicate_index import Index, get_tableindexes, CONST_DUPLICATE_INDEX, CONST_SUSPECTED_DUPLICATE_INDEX
+from .duplicate_index import Index, get_tableindexes, CONST_DUPLICATE_INDEX, CONST_SUSPECTED_DUPLICATE_INDEX
 
 # 关键字，实例变量不能使用这些关键字
 KEYWORDS = ["class_to_table_name", "fields"]
