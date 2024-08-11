@@ -191,7 +191,6 @@ def footer(local=True):
 def main():
     conn = sqlite3.connect('dbinfo.db')
     conn.text_factory = str  # Set character set to UTF-8
-
     queries = {
         "Node Versions": "SELECT * FROM tidb_nodeversion",
         "Variables": "SELECT * FROM tidb_variable",
