@@ -92,6 +92,9 @@ def collect(args):
     slowquery_end_time = datetime.now()
     if not password:
         password = getpass.getpass("请输入密码:")
+    if args.output_dir == "output":
+        Path("output").mkdir(exist_ok=True)
+    logging.info(f"输出目录:{args.output_dir}")
     if ip and ip != "127.0.0.1":
         if not args.cluster:
             args.cluster = "default"
@@ -112,20 +115,25 @@ def collect(args):
     else:
         cluster_infos = get_cluster_infos()
         for cluster_info in cluster_infos:
-            conn = pymysql.connect(host=cluster_info.ip, port=cluster_info.port, user=user, password=password,
-                                   charset="utf8mb4",
-                                   database="information_schema", connect_timeout=10,
-                                   init_command="set session max_execution_time=30000")
-            out_conn = sqlite3.connect(f"{args.output_dir}/{cluster_info.cluster_name}.sqlite3")
-            out_conn.text_factory = str
-            SaveData(out_conn, get_variables, conn)
-            SaveData(out_conn, get_column_collations, conn)
-            SaveData(out_conn, get_user_privileges, conn)
-            SaveData(out_conn, get_node_versions, conn)
-            SaveData(out_conn, get_slow_query_info, conn, slowquery_start_time, slowquery_end_time)
-            SaveData(out_conn, get_duplicate_indexes, conn)
-            conn.close()
-            out_conn.close()
+            logging.info(f"开始获取{cluster_info.cluster_name}信息，ip:{cluster_info.ip},port:{cluster_info.port}")
+            try:
+                conn = pymysql.connect(host=cluster_info.ip, port=cluster_info.port, user=user, password=password,
+                                       charset="utf8mb4",
+                                       database="information_schema", connect_timeout=10,
+                                       init_command="set session max_execution_time=30000")
+                out_conn = sqlite3.connect(f"{args.output_dir}/{cluster_info.cluster_name}.sqlite3")
+                out_conn.text_factory = str
+                SaveData(out_conn, get_variables, conn)
+                SaveData(out_conn, get_column_collations, conn)
+                SaveData(out_conn, get_user_privileges, conn)
+                SaveData(out_conn, get_node_versions, conn)
+                SaveData(out_conn, get_slow_query_info, conn, slowquery_start_time, slowquery_end_time)
+                SaveData(out_conn, get_duplicate_indexes, conn)
+                conn.close()
+                out_conn.close()
+            except Exception as e:
+                logging.error(f"获取{cluster_info.cluster_name}信息失败:{e}")
+                continue
 
 
 def report(args):
@@ -137,9 +145,25 @@ def report(args):
     in_file = Path(args.db)
     if not in_file.exists():
         raise FileNotFoundError(f"{in_file} not found")
-    out_file = Path(args.output).joinpath(in_file.stem).with_suffix(".html")
-    report_html(str(in_file), str(out_file))
-
+    in_files = []
+    if in_file.is_dir():
+        for each_file in in_file.iterdir():
+            # 用sqlite3 尝试打开文件，如果不是sqlite3文件则跳过
+            try:
+                conn = sqlite3.connect(f'file:{each_file}?mode=ro', uri=True)
+                conn.execute("select count(*) from sqlite_master limit 1")
+                conn.close()
+                in_files.append(each_file)
+            except sqlite3.DatabaseError:
+                logging.warning(f"{each_file}不是sqlite3文件，跳过")
+                continue
+    else:
+        in_files.append(in_file)
+    logging.info("共需要解析文件数:%d", len(in_files))
+    for in_file in in_files:
+        out_file = Path(args.output).joinpath(in_file.stem).with_suffix(".html")
+        logging.info(f"开始解析{in_file}，输出文件:{out_file}")
+        report_html(str(in_file), str(out_file))
 
 def main():
     """
@@ -160,7 +184,7 @@ def main():
     collect_parser.add_argument("-o", "--output-dir", type=str, help="输出sqlite3文件路径,如果是多个集群则会在这个目录下生成多个文件，以集群名称命名", default="output")
     collect_parser.add_argument("--since", type=str, help="慢查询开始时间,格式为1d,1h,1m，比如查询最近10分钟慢日志则：--since=10m", default="1d")
     report_parser = subparsers.add_parser("report", help="从sqlite3中获取信息生成html报表")
-    report_parser.add_argument("-i","--db", type=str, help="sqlite3文件路径")
+    report_parser.add_argument("-i","--db", type=str, help="sqlite3文件路径，如果是目录则会查找目录下的所有sqlite3文件")
     report_parser.add_argument("-o", "--output", type=str, help="输出html文件路径,默认当前路径", default=".")
     args = parser.parse_args()
     set_max_memory()
