@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 import yaml
 from pkg.dbinfo import get_node_versions, get_variables, get_column_collations, get_user_privileges, \
-    get_slow_query_info, get_duplicate_indexes, SaveData
+    get_slow_query_info,get_statement_history, get_duplicate_indexes, SaveData
 from datetime import datetime, timedelta
 from pkg.report import report as report_html
 
@@ -109,6 +109,7 @@ def collect(args):
         SaveData(out_conn, get_node_versions, conn)
         SaveData(out_conn, get_slow_query_info, conn, datetime.now() - timedelta(days=10),
                  datetime.now())  # 默认查询最近一天的慢查询
+        SaveData(out_conn, get_statement_history, conn)
         SaveData(out_conn, get_duplicate_indexes, conn)
         conn.close()
         out_conn.close()
@@ -130,6 +131,7 @@ def collect(args):
                 SaveData(out_conn, get_user_privileges, conn)
                 SaveData(out_conn, get_node_versions, conn)
                 SaveData(out_conn, get_slow_query_info, conn, slowquery_start_time, slowquery_end_time)
+                SaveData(out_conn, get_statement_history, conn)
                 SaveData(out_conn, get_duplicate_indexes, conn)
                 conn.close()
                 out_conn.close()
