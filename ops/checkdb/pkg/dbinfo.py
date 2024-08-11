@@ -454,7 +454,7 @@ def get_statement_history(conn, min_latency=50000):
                  from (select *, row_number() over(partition by INSTANCE,SUMMARY_BEGIN_TIME order by EXEC_COUNT desc) as nbr
                        from INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY
                        where AVG_LATENCY >= {min_latency}) a -- 超过50ms的SQL
-                 where a.nbr < 30) -- 取每个批次的前30条SQL
+                 where a.nbr <= 30) -- 取每个批次的前30条SQL
 
     select EXEC_COUNT,STMT_TYPE,AVG_LATENCY,INSTANCE,SUMMARY_BEGIN_TIME,SUMMARY_END_TIME,FIRST_SEEN,LAST_SEEN,DIGEST,PLAN_DIGEST,SUM_LATENCY,AVG_MEM,AVG_DISK,AVG_RESULT_ROWS,AVG_AFFECTED_ROWS,AVG_PROCESSED_KEYS,AVG_TOTAL_KEYS,AVG_ROCKSDB_DELETE_SKIPPED_COUNT,AVG_ROCKSDB_KEY_SKIPPED_COUNT,AVG_ROCKSDB_BLOCK_READ_COUNT,SCHEMA_NAME,TABLE_NAMES,INDEX_NAMES,DIGEST_TEXT,QUERY_SAMPLE_TEXT,PREV_SAMPLE_TEXT,PLAN
     from top_sql limit 100000 -- 控制最多返回10万条
