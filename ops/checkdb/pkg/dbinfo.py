@@ -408,6 +408,7 @@ def get_slow_query_info(conn, start_time=None, end_time=None):
 
 class StatementHistory(BaseTable):
     def __init__(self):
+        self.digest = ""
         self.exec_count = 0
         self.stmt_type = ""
         self.avg_latency = 0
@@ -416,7 +417,6 @@ class StatementHistory(BaseTable):
         self.summary_end_time = ""
         self.first_seen = ""
         self.last_seen = ""
-        self.digest = ""
         self.plan_digest = ""
         self.sum_latency = 0
         self.avg_mem = 0
@@ -439,10 +439,10 @@ class StatementHistory(BaseTable):
 
 
 # 查询当前数据库中INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY表数据
-def get_statement_history(conn, min_latency=50000):
+def get_statement_history(conn, min_latency=50):
     """
     获取数据库中INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY视图中的SQL
-    :param min_latency: 高于该值的SQL才会被返回，单位：微秒
+    :param min_latency: 高于该值的SQL才会被返回，单位：毫秒
     :type min_latency: int
     :param conn: pymysql.connections.Connection
     :type conn: pymysql.connections.Connection
@@ -453,10 +453,10 @@ def get_statement_history(conn, min_latency=50000):
     with top_sql as (select *
                  from (select *, row_number() over(partition by INSTANCE,SUMMARY_BEGIN_TIME order by EXEC_COUNT desc) as nbr
                        from INFORMATION_SCHEMA.CLUSTER_STATEMENTS_SUMMARY_HISTORY
-                       where AVG_LATENCY >= {min_latency}) a -- 超过50ms的SQL
+                       where AVG_LATENCY/1000000 >= {min_latency}) a -- 超过50ms的SQL
                  where a.nbr <= 30) -- 取每个批次的前30条SQL
 
-    select EXEC_COUNT,STMT_TYPE,AVG_LATENCY,INSTANCE,SUMMARY_BEGIN_TIME,SUMMARY_END_TIME,FIRST_SEEN,LAST_SEEN,DIGEST,PLAN_DIGEST,SUM_LATENCY,AVG_MEM,AVG_DISK,AVG_RESULT_ROWS,AVG_AFFECTED_ROWS,AVG_PROCESSED_KEYS,AVG_TOTAL_KEYS,AVG_ROCKSDB_DELETE_SKIPPED_COUNT,AVG_ROCKSDB_KEY_SKIPPED_COUNT,AVG_ROCKSDB_BLOCK_READ_COUNT,SCHEMA_NAME,TABLE_NAMES,INDEX_NAMES,DIGEST_TEXT,QUERY_SAMPLE_TEXT,PREV_SAMPLE_TEXT,PLAN
+    select EXEC_COUNT,STMT_TYPE,round(AVG_LATENCY/1000000000,3) as AVG_LATENCY,INSTANCE,SUMMARY_BEGIN_TIME,SUMMARY_END_TIME,FIRST_SEEN,LAST_SEEN,DIGEST,PLAN_DIGEST,round(SUM_LATENCY/1000000000,3) as SUM_LATENCY,AVG_MEM,AVG_DISK,AVG_RESULT_ROWS,AVG_AFFECTED_ROWS,AVG_PROCESSED_KEYS,AVG_TOTAL_KEYS,AVG_ROCKSDB_DELETE_SKIPPED_COUNT,AVG_ROCKSDB_KEY_SKIPPED_COUNT,AVG_ROCKSDB_BLOCK_READ_COUNT,SCHEMA_NAME,TABLE_NAMES,INDEX_NAMES,DIGEST_TEXT,QUERY_SAMPLE_TEXT,PREV_SAMPLE_TEXT,PLAN
     from top_sql limit 100000 -- 控制最多返回10万条
     """
     cursor = conn.cursor(pymysql.cursors.DictCursor)
