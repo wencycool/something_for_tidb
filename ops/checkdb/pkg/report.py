@@ -1,6 +1,6 @@
 import pathlib
 import sqlite3
-
+from pathlib import Path
 
 def fetch_data(conn, query):
     cursor = conn.cursor()
@@ -38,7 +38,7 @@ def header(local=True):
     :param local: 是否使用本地的js和css文件
     """
     # 找到js目录下所有的js文件
-    css_files = list(pathlib.Path('js').glob('*.css'))
+    css_files = list(Path(__file__).parent.joinpath("js").glob('*.css'))
     # 生成jscript代码，嵌入到html中
     if local:
         csss = ""
@@ -130,6 +130,7 @@ def footer(local=True):
     jscripts = ""
     if local:
         for js_file in js_files:
+            js_file = Path(__file__).parent.joinpath(js_file)
             with open(js_file, 'r', encoding='utf-8') as file:
                 js_content = file.read()
             jscripts += f"<script>{js_content}</script>\n"
@@ -188,8 +189,15 @@ def footer(local=True):
     return footer
 
 
-def main():
-    conn = sqlite3.connect('../dbinfo.db')
+def report(in_file, out_file):
+    """
+    从sqlite3中获取信息生成html报表
+    :param in_file: sqlite3文件路径
+    :type in_file: str
+    :param out_file: 输出html文件路径
+    :type out_file: str
+    """
+    conn = sqlite3.connect(in_file)
     conn.text_factory = str  # Set character set to UTF-8
     queries = {
         "Node Versions": "SELECT * FROM tidb_nodeversion",
@@ -218,10 +226,14 @@ def main():
     html_content += footer()
     html_content += "</body>\n"
 
-    with open('../output.html', 'w', encoding='utf-8') as file:
+    with open(out_file, 'w', encoding='utf-8') as file:
         file.write(html_content)
 
     conn.close()
+
+
+def main():
+    report('../default.sqlite3', 'output.html')
 
 
 if __name__ == "__main__":
