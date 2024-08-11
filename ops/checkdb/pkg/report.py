@@ -189,7 +189,7 @@ def footer(local=True):
 
 
 def main():
-    conn = sqlite3.connect('dbinfo.db')
+    conn = sqlite3.connect('../dbinfo.db')
     conn.text_factory = str  # Set character set to UTF-8
     queries = {
         "Node Versions": "SELECT * FROM tidb_nodeversion",
@@ -218,7 +218,7 @@ def main():
     html_content += footer()
     html_content += "</body>\n"
 
-    with open('output.html', 'w', encoding='utf-8') as file:
+    with open('../output.html', 'w', encoding='utf-8') as file:
         file.write(html_content)
 
     conn.close()

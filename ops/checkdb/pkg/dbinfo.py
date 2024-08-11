@@ -459,7 +459,7 @@ if __name__ == "__main__":
     conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",
                            database="information_schema",connect_timeout=10,
                            init_command="set session max_execution_time=30000")
-    out_conn = sqlite3.connect("dbinfo.db")
+    out_conn = sqlite3.connect("../dbinfo.db")
     out_conn.text_factory = str
     # out_conn = pymysql.connect(host="192.168.31.201", port=4000, user="root", password="123", charset="utf8mb4",database="test")
     SaveData(out_conn, get_variables, conn)
