@@ -100,7 +100,7 @@ def collect(args):
             args.cluster = "default"
         conn = pymysql.connect(host=ip, port=port, user=user, password=password, charset="utf8mb4",
                                database="information_schema", connect_timeout=10,
-                               init_command="set session max_execution_time=30000")
+                               init_command="set session max_execution_time=30000; set tidb_executor_concurrency=2; set tidb_distsql_scan_concurrency=5")
         out_conn = sqlite3.connect(f"{args.output_dir}/{args.cluster}.sqlite3")
         out_conn.text_factory = str
         SaveData(out_conn, get_variables, conn)
