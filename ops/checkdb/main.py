@@ -113,6 +113,9 @@ def collect(args):
         SaveData(out_conn, get_duplicate_indexes, conn)
         conn.close()
         out_conn.close()
+        if args.with_report:
+            logging.info(f"开始生成{args.cluster}报表")
+            report_html(f"{args.output_dir}/{args.cluster}.sqlite3", f"{args.output_dir}/{args.cluster}.html")
     else:
         cluster_infos = get_cluster_infos()
         if args.cluster and args.cluster != "default":
@@ -135,6 +138,10 @@ def collect(args):
                 SaveData(out_conn, get_duplicate_indexes, conn)
                 conn.close()
                 out_conn.close()
+                if args.with_report:
+                    logging.info(f"开始生成{args.cluster}报表")
+                    report_html(f"{args.output_dir}/{cluster_info.cluster_name}.sqlite3",
+                                f"{args.output_dir}/{cluster_info.cluster_name}.html")
             except Exception as e:
                 logging.error(f"获取{cluster_info.cluster_name}信息失败:{e}")
                 continue
@@ -187,6 +194,7 @@ def main():
     collect_parser.add_argument("--password", type=str, help="集群密码")
     collect_parser.add_argument("-o", "--output-dir", type=str, help="输出sqlite3文件路径,如果是多个集群则会在这个目录下生成多个文件，以集群名称命名", default="output")
     collect_parser.add_argument("--since", type=str, help="慢查询开始时间,格式为1d,1h,1m，比如查询最近10分钟慢日志则：--since=10m", default="1d")
+    collect_parser.add_argument("--with-report", action="store_true", help="是否同时生成html报表")
     report_parser = subparsers.add_parser("report", help="从sqlite3中获取信息生成html报表")
     report_parser.add_argument("-i","--db", type=str, help="sqlite3文件路径，如果是目录则会查找目录下的所有sqlite3文件")
     report_parser.add_argument("-o", "--output", type=str, help="输出html文件路径,默认当前路径", default=".")
