@@ -114,6 +114,8 @@ def collect(args):
         out_conn.close()
     else:
         cluster_infos = get_cluster_infos()
+        if args.cluster and args.cluster != "default":
+            cluster_infos = [cluster for cluster in cluster_infos if cluster.cluster_name in args.cluster.split(",")]
         for cluster_info in cluster_infos:
             logging.info(f"开始获取{cluster_info.cluster_name}信息，ip:{cluster_info.ip},port:{cluster_info.port}")
             try:
