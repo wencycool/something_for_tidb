@@ -25,15 +25,15 @@ import atexit
 # */30 * * * * /usr/bin/python3 /path/to/pump_gc.py
 
 # 当pump所在的文件系统使用率超过阈值后需要对pump中的数据进行清理，清理规则为：
-# pump中的数据必须已经应用到了drainer，即pump中的数据的gcTS小于drainer的maxCommitTS
-# pump部署目录必须为tidb用户，且每一个os上只有一个pump进程，且采用默认部署路径/tidb-deploy/pump-8250
+# 【确保日志不丢】pump中的数据必须已经应用到了drainer，即pump中的数据的gcTS小于drainer的maxCommitTS
+# 【确保符合运维规范】pump部署目录必须为tidb用户，且每一个os上只有一个pump进程，且采用默认部署路径/tidb-deploy/pump-8250
 # 清理流程为：
 # 1. 从pump的http://127.0.0.1:8250/drainers获取maxCommitTS
 # 2. 计算pump的gcTS，比drainer的maxCommitTS小10分钟
 # 3. 备份pump.toml并修改pump的gc配置，gc=xxhyym
-# 4. 通过sudo sysemctl restart pump-8250重启pump，并探测pump是否重启成功
+# 4. 通过sudo sysemctl restart pump-8250重启pump，并探测pump是否重启成功，避免进程启动成功但端口未监听成功
 # 5. 利用http://127.0.0.1:8250/debug/gc/triggers触发gc，等待gc完成（该过程是异步的，需要循环检测gc是否完成）
-# 6. 利用http://127.0.0.1:8250/metrics获取binlog_pump_storage_done_gc_ts，判断是gc是否已经完成
+# 6. 利用http://127.0.0.1:8250/metrics获取binlog_pump_storage_done_gc_ts，判断pump的gc是否已经完成
 # 7. 恢复pump.toml配置文件
 # 8. 检查pump是否正常运行，状态（http://127.0.0.1:8250/status）是否正常
 # 9. 检查pump是否继续接受binlog日志写入（http://127.0.0.1:8250/binlog/recover?op=status)，如果不正常则重置写入状态
@@ -42,9 +42,9 @@ import atexit
 
 # 当多个pump同时执行gc时，需要保证串行执行，起码不能同时暂停pump，否则会导致写binlog暂停
 # 分布式串行执行逻辑：
-# 1. 利用127.0.0.1:10080/status查询所有pump的IP和端口
-# 2. 依次连接所有pump节点的IP:53556，查看目标脚本是否正在执行，如果重复轮询判断，直到超时退出
-# 3. 如果有任何pump节点在执行，则本启动对53556端口的监听，并等待3秒钟后再次判断是否有其他节点在执行（避免同时执行），如果有则等待，则只保留IP最大的节点执行
+# 1. 利用本地tidb的api：127.0.0.1:10080/status查询所有pump的IP和端口
+# 2. 依次探测所有pump节点的IP:53556，查看目标脚本是否正在执行，如果重复轮询判断，直到超时退出
+# 3. 如果有任何pump节点在执行，则本地启动对53556端口的监听，并等待3秒钟后再次判断是否有其他节点在执行（避免同时执行），如果有则等待，则只保留IP最大的节点执行
 # 4. 执行完毕后，释放监听端口
 
 # todo 在运行期间通过添加API的方式抑制altermanager对当前pump的告警，避免在运维过程中出现告警。
