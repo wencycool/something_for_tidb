@@ -48,6 +48,7 @@ import atexit
 # 4. 执行完毕后，释放监听端口
 
 # todo 在运行期间通过添加API的方式抑制altermanager对当前pump的告警，避免在运维过程中出现告警。
+# 因重启pump过程非常快，从测试来看一般情况下并不会触发Pump_server_is_down告警（每15秒探测一次持续1分钟一致处于down状态才会告警),因此这里暂不考虑告警抑制情况。
 
 pump_port = 8250
 deploy_user = "tidb"
@@ -540,9 +541,6 @@ class Lock:
                 self.service.close()
             except Exception as e:
                 pass
-
-
-# todo 添加文件系统使用率判断规则
 
 
 # 执行清理pump逻辑
