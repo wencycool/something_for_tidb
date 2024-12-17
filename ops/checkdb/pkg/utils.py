@@ -1,7 +1,7 @@
 # 限制python的内存使用不超过8GB
 
 
-def set_max_memory(max_memory=8 * 1024 * 1024 * 1024):
+def set_max_memory(max_memory=4 * 1024 * 1024 * 1024):
     """
     限制python的内存使用不超过max_memory，异步操作，不会阻塞后续代码执行
     :param max_memory: 最大内存限制
@@ -15,3 +15,15 @@ def set_max_memory(max_memory=8 * 1024 * 1024 * 1024):
 
 # 将任何一个类转转到sqlite3的数据表
 
+import resource
+
+def set_max_memory(max_memory=1024 * 1024 * 1024):  # Default to 1GB
+    """
+        限制python的内存使用不超过max_memory，异步操作，不会阻塞后续代码执行
+        :param max_memory: 最大内存限制
+        :type max_memory: int
+        """
+    soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    if max_memory > hard:
+        raise ValueError(f"max_memory ({max_memory}) exceeds the maximum allowed limit ({hard})")
+    resource.setrlimit(resource.RLIMIT_AS, (max_memory, max_memory))
