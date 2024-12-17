@@ -4,7 +4,10 @@ from pathlib import Path
 
 def fetch_data(conn, query):
     cursor = conn.cursor()
-    cursor.execute(query)
+    try:
+        cursor.execute(query)
+    except sqlite3.OperationalError as e:
+        return [], []
     rows = cursor.fetchall()
     column_names = [description[0] for description in cursor.description]
     cursor.close()
