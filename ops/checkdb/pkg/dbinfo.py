@@ -12,7 +12,7 @@ KEYWORDS = ["class_to_table_name", "fields"]
 # 实例变量是字符串，如果值长度比较长，创建表结构时需要特殊处理
 LONG_VARCHAR_TABLE_COLUMNS = ["plan", "query", "table_names", "index_names", "digest_text", "query_sample_text"]
 
-
+# 从数据库获取的数据保存到sqlite3的数据表中
 # 创建基类，用于生成建表语句和insert语句，让其它类继承
 class BaseTable:
     def __init__(self):
