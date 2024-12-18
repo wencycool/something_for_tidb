@@ -34,6 +34,106 @@ def generate_html_table(table_id, column_names, rows):
     html_table += "</table>\n"
     return html_table
 
+# column_names第一列为时间，后面的列为数据
+def generate_html_chart(column_names, rows, title="", legends=None):
+    # 提取时间和分类数据
+    times = [row[0] for row in rows]
+    series_data = {column_names[i]: [row[i] for row in rows] for i in range(1, len(column_names))}
+
+    # 图例：如果未提供 legends，则默认使用列名
+    if legends is None:
+        legends = column_names[1:]
+
+    # 生成数据系列的 JS 配置
+    series = []
+    colors = ['#007BFF', '#28A745', '#FF5733', '#FFC300', '#DAF7A6']  # 预定义颜色
+    for idx, (key, values) in enumerate(series_data.items()):
+        series.append(f"""
+            {{
+                name: '{legends[idx]}',
+                data: {values},
+                type: 'line',
+                smooth: true,
+                lineStyle: {{
+                    color: '{colors[idx % len(colors)]}',
+                    width: 2
+                }},
+                itemStyle: {{
+                    color: '{colors[idx % len(colors)]}'
+                }}
+            }}
+        """)
+
+    # HTML 模板
+    html_template = f"""
+    
+    <div id="chart"></div>
+    <script>
+        // 初始化图表
+        var chart = echarts.init(document.getElementById('chart'));
+
+        // 配置项
+        var option = {{
+            title: {{
+                text: '{title}',
+                left: 'center',
+                textStyle: {{
+                    fontSize: 18,
+                    color: '#333'
+                }}
+            }},
+            tooltip: {{
+                trigger: 'axis',
+                backgroundColor: 'rgba(50, 50, 50, 0.7)',
+                borderColor: '#ccc',
+                borderWidth: 1,
+                textStyle: {{
+                    color: '#fff'
+                }}
+            }},
+            legend: {{
+                data: {legends},
+                top: '10%'
+            }},
+            xAxis: {{
+                type: 'category',
+                data: {times},
+                axisLine: {{
+                    lineStyle: {{
+                        color: '#888'
+                    }}
+                }},
+                axisLabel: {{
+                    rotate: 30,
+                    color: '#555'
+                }}
+            }},
+            yAxis: {{
+                type: 'value',
+                name: 'Connections',
+                axisLine: {{
+                    lineStyle: {{
+                        color: '#888'
+                    }}
+                }},
+                axisLabel: {{
+                    color: '#555'
+                }}
+            }},
+            series: [{','.join(series)}],
+            dataZoom: [{{
+                type: 'slider',
+                show: true,
+                xAxisIndex: [0]
+            }}]
+        }};
+
+        // 使用配置项生成图表
+        chart.setOption(option);
+    </script>
+"""
+    return html_template
+
 
 def header(local=True):
     """
@@ -41,11 +141,13 @@ def header(local=True):
     :param local: 是否使用本地的js和css文件
     """
     # 找到js目录下所有的js文件
-    css_files = list(Path(__file__).parent.joinpath("js").glob('*.css'))
+    # css_files = list(Path(__file__).parent.joinpath("js").glob('*.css'))
+    css_files = ['js/jquery.dataTables.min.css', 'js/fixedHeader.dataTables.min.css', 'js/responsive.dataTables.min.css']
     # 生成jscript代码，嵌入到html中
     if local:
         csss = ""
         for css_file in css_files:
+            css_file=Path(__file__).parent.joinpath(css_file)
             with open(css_file, 'r', encoding='utf-8') as file:
                 css_content = file.read()
             csss += f"<style>{css_content}</style>\n"
@@ -128,7 +230,7 @@ def footer(local=True):
     # 找到js目录下所有的js文件，要确保顺序，因为有依赖关系
     # js_files = list(pathlib.Path('js').glob('*.js'))
     js_files = ['js/jquery-3.6.0.min.js', 'js/jquery-ui.min.js', 'js/jquery.dataTables.min.js',
-                'js/dataTables.fixedHeader.min.js', 'js/dataTables.responsive.min.js']
+                'js/dataTables.fixedHeader.min.js', 'js/dataTables.responsive.min.js', 'js/echarts.min.js']
     # 生成jscript代码，嵌入到html中
     jscripts = ""
     if local:
@@ -203,13 +305,17 @@ def report(in_file, out_file):
     conn = sqlite3.connect(in_file)
     conn.text_factory = str  # Set character set to UTF-8
     queries = {
-        "Node Versions": ["SELECT * FROM tidb_nodeversion", "查询每个节点的版本信息，不同类型节点大版本一定相同，相同类型节点git_hash一定相同（节点单独打补丁会有此类问题）"],
-        "Variables": ["SELECT * FROM tidb_variable", "查询tidb的配置信息,包括集群变量和系统全局变量"],
-        "Column Collations": ["SELECT * FROM tidb_columncollation", "查询表字段上的排序规则，如果不是utf8mb4_bin则会列出（可能会导致索引失效）"],
-        "User Privileges": ["SELECT * FROM tidb_userprivilege", "查询用户权限信息，包括用户的权限和角色,多个权限则排序后按照逗号分隔"],
-        "Slow Queries":  ["SELECT * FROM tidb_slowquery", "查询慢查询信息，包括慢查询的sql语句和执行时间，按照Digest和Plan_digest进行分组聚合"],
-        "Statement History": ["select * from tidb_statementhistory", "查询tidb的历史sql语句，包括sql语句和执行时间，选择大于50ms且执行次数top30的语句，avg_latency为平均执行时间（秒）。假设某种 SQL 每分钟都出现，那 statements_summary_history 中会保存这种 SQL 最近 12 个小时的数据。但如果某种 SQL 只在每天 00:00 ~ 00:30 出现，则 statements_summary_history 中会保存这种 SQL 24 个时间段的数据，每个时间段的间隔都是 1 天，所以会有这种 SQL 最近 24 天的数据。"],
-        "Duplicate Indexes": ["SELECT * FROM tidb_duplicateindex",  "查询表上的冗余索引，state为DUPLICATE_INDEX表示冗余索引（最左前缀覆盖），state为SUSPECTED_DUPLICATE_INDEX表示疑似冗余索引"],
+        "Node Info": ["table","SELECT * FROM tidb_nodeinfo", "查询每个节点的信息，包括节点的IP地址、端口、状态、版本、启动时间、上线时间、下线时间、节点类型、节点角色、节点状态、节点状态描述"],
+        "Os Info": ["table","SELECT * FROM tidb_osinfo", "查询每个节点的操作系统信息，包括CPU数和内存大小"],
+        "Disk Info": ["table","SELECT * FROM tidb_diskinfo where used_percent >0.4", "查询每个节点的磁盘信息，包括磁盘的挂载点、磁盘大小、磁盘使用率（大于70%）"],
+        "Memory Info": ["table","SELECT time,used_percent FROM tidb_memoryinfo", "查询每个节点的内存信息，包括内存大小、内存使用率"],
+        "Variables": ["table","SELECT * FROM tidb_variable", "查询tidb的配置信息,包括集群变量和系统全局变量"],
+        "Column Collations": ["table","SELECT * FROM tidb_columncollation", "查询表字段上的排序规则，如果不是utf8mb4_bin则会列出（可能会导致索引失效）"],
+        "User Privileges": ["table","SELECT * FROM tidb_userprivilege", "查询用户权限信息，包括用户的权限和角色,多个权限则排序后按照逗号分隔"],
+        "Slow Queries":  ["table","SELECT * FROM tidb_slowquery", "查询慢查询信息，包括慢查询的sql语句和执行时间，按照Digest和Plan_digest进行分组聚合"],
+        "Statement History": ["table","select * from tidb_statementhistory", "查询tidb的历史sql语句，包括sql语句和执行时间，选择大于50ms且执行次数top30的语句，avg_latency为平均执行时间（秒）。假设某种 SQL 每分钟都出现，那 statements_summary_history 中会保存这种 SQL 最近 12 个小时的数据。但如果某种 SQL 只在每天 00:00 ~ 00:30 出现，则 statements_summary_history 中会保存这种 SQL 24 个时间段的数据，每个时间段的间隔都是 1 天，所以会有这种 SQL 最近 24 天的数据。"],
+        "Duplicate Indexes": ["table","SELECT * FROM tidb_duplicateindex",  "查询表上的冗余索引，state为DUPLICATE_INDEX表示冗余索引（最左前缀覆盖），state为SUSPECTED_DUPLICATE_INDEX表示疑似冗余索引"],
+
     }
 
     html_content = header()
@@ -222,13 +328,17 @@ def report(in_file, out_file):
 
     html_content += "<div class='table-container'>\n"
     for idx, (title, query_list) in enumerate(queries.items()):
-        query = query_list[0]
-        describe = query_list[1]
+        query = query_list[1]
+        describe = query_list[2]
         column_names, rows = fetch_data(conn, query)
         table_id = f"table_{idx}"
         html_content += f"<h2 id='{title.replace(' ', '_')}'>{title}</h2>\n"
         html_content += f"<small style='color: black; font-size: small;'>{describe}</small><br></br>\n"
-        html_content += generate_html_table(table_id, column_names, rows)
+        if query_list[0] == "chart":
+            # column_names第一列为时间，后面的列为数据
+            html_content += generate_html_chart(column_names, rows, title)
+        else:
+            html_content += generate_html_table(table_id, column_names, rows)
     html_content += "</div>\n"
     html_content += footer()
     html_content += "</body>\n"

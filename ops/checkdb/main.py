@@ -1,4 +1,5 @@
 import logging
+
 from pkg.utils import set_max_memory
 import pymysql
 import sqlite3
@@ -7,10 +8,26 @@ import getpass
 import shutil
 from pathlib import Path
 import yaml
-from pkg.dbinfo import get_node_versions, get_variables, get_column_collations, get_user_privileges, \
-    get_slow_query_info,get_statement_history, get_duplicate_indexes, SaveData
+from pkg.dbinfo import *
 from datetime import datetime, timedelta
 from pkg.report import report as report_html
+
+functions_to_save = [
+    get_variables,
+    get_column_collations,
+    get_user_privileges,
+    get_node_versions,
+    get_slow_query_info,
+    get_statement_history,
+    get_duplicate_indexes,
+    get_node_info,
+    get_os_info,
+    get_disk_info,
+    get_table_info,
+    get_memory_detail,
+    get_connection_info,
+]
+
 
 def set_logger(log_level):
     """
@@ -103,14 +120,11 @@ def collect(args):
         # init_command = "set session max_execution_time=30000; set tidb_executor_concurrency=2; set tidb_distsql_scan_concurrency=5; set tidb_multi_statement_mode='ON'"
         out_conn = sqlite3.connect(f"{args.output_dir}/{args.cluster}.sqlite3")
         out_conn.text_factory = str
-        SaveData(out_conn, get_variables, conn)
-        SaveData(out_conn, get_column_collations, conn)
-        SaveData(out_conn, get_user_privileges, conn)
-        SaveData(out_conn, get_node_versions, conn)
-        SaveData(out_conn, get_slow_query_info, conn, datetime.now() - timedelta(days=10),
-                 datetime.now())  # 默认查询最近一天的慢查询
-        SaveData(out_conn, get_statement_history, conn)
-        SaveData(out_conn, get_duplicate_indexes, conn)
+        for func in functions_to_save:
+            if func == get_slow_query_info:
+                SaveData(out_conn, func, conn, datetime.now() - timedelta(days=10), datetime.now())
+            else:
+                SaveData(out_conn, func, conn)
         conn.close()
         out_conn.close()
         if args.with_report:
@@ -199,7 +213,8 @@ def main():
     report_parser.add_argument("-i","--db", type=str, help="sqlite3文件路径，如果是目录则会查找目录下的所有sqlite3文件")
     report_parser.add_argument("-o", "--output", type=str, help="输出html文件路径,默认当前路径", default=".")
     args = parser.parse_args()
-    set_max_memory()
+    # todo 打开内存控制参数
+    # set_max_memory()
     set_logger(args.log)
     if args.command == "collect":
         collect(args)
