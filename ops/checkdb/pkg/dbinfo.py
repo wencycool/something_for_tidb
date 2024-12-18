@@ -494,6 +494,43 @@ def get_statement_history(conn, min_latency=50):
     cursor.close()
     return statement_histories
 
+# 获取集群节点信息
+# -- 以节点为视角查询集群所有节点信息,包括端口号信息
+# select type,instance,STATUS_ADDRESS,version,START_TIME,uptime,SERVER_ID from INFORMATION_SCHEMA.CLUSTER_INFO;
+class NodeInfo(BaseTable):
+    def __init__(self):
+        self.type = ""
+        self.instance = ""
+        self.status_address = ""
+        self.version = ""
+        self.start_time = ""
+        self.uptime = ""
+        self.server_id = 0
+        super().__init__()
+
+def get_node_info(conn):
+    """
+    获取数据库中所有节点的信息
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[NodeInfo]
+    """
+    node_infos: List[NodeInfo] = []
+    cursor = conn.cursor()
+    cursor.execute("select type,instance,STATUS_ADDRESS,version,START_TIME,uptime,SERVER_ID from INFORMATION_SCHEMA.CLUSTER_INFO")
+    for row in cursor:
+        node_info = NodeInfo()
+        node_info.type = row[0]
+        node_info.instance = row[1]
+        node_info.status_address = row[2]
+        node_info.version = row[3]
+        node_info.start_time = row[4]
+        node_info.uptime = row[5]
+        node_info.server_id = row[6]
+        node_infos.append(node_info)
+    cursor.close()
+    return node_infos
+
 
 # 将所有的函数输出写到sqlite3的数据表中
 
@@ -539,6 +576,461 @@ def SaveData(conn, callback, *args, **kwargs):
         logging.error(f"Save data failed: {e}, {traceback.format_exc()}")
         return False
 
+# -- 以os为视角，查询集群中所有主机信息，包括如下属性：
+# -- 1、CPU核数，内存大小
+# WITH ip_node_map as (SELECT ip_address,
+#                             GROUP_CONCAT(CONCAT(TYPE, '(', TYPE_COUNT, ')') ORDER BY TYPE) AS TYPES_COUNT
+#                      FROM (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1) AS ip_address,
+#                                   TYPE,
+#                                   COUNT(*)                          AS TYPE_COUNT
+#                            FROM INFORMATION_SCHEMA.CLUSTER_INFO
+#                            GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1), TYPE) node_type_count
+#                      GROUP BY ip_address),
+#      os_info AS (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1)                         AS IP_ADDRESS,
+#                         MAX(CASE WHEN NAME = 'cpu-physical-cores' THEN VALUE END) AS CPU_CORES,
+#                         MAX(CASE WHEN NAME = 'capacity' THEN VALUE END)           AS MEMORY_CAPACITY,
+#                         MAX(CASE WHEN NAME = 'cpu-arch' THEN VALUE END)           AS CPU_ARCH
+#                  FROM INFORMATION_SCHEMA.CLUSTER_HARDWARE
+#                  WHERE (DEVICE_TYPE = 'cpu' AND DEVICE_NAME = 'cpu' AND NAME IN ('cpu-arch', 'cpu-physical-cores'))
+#                     OR (DEVICE_TYPE = 'memory' AND DEVICE_NAME = 'memory' AND NAME = 'capacity')
+#                  GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1)),
+#      ip_hostname_map as (select substring_index(instance, ':', 1) as ip_address,
+#                                 value                             as hostname
+#                          from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO
+#                          where name = 'kernel.hostname'
+#                          group by ip_address, hostname)
+# select c.hostname,
+#        a.ip_address,
+#        types_count,
+#        cpu_arch,
+#        cpu_cores,
+#        round(memory_capacity / 1024 / 1024 / 1024, 1) as memory_capacity_gb
+# from ip_node_map a
+#          join os_info b
+#               on a.ip_address = b.ip_address
+#          join ip_hostname_map c on a.ip_address = c.ip_address;
+class OSInfo(BaseTable):
+    def __init__(self):
+        self.hostname = ""
+        self.ip_address = ""
+        self.types_count = ""
+        self.cpu_arch = ""
+        self.cpu_cores = 0
+        self.memory_capacity_gb = 0.0
+        super().__init__()
+
+def get_os_info(conn):
+    """
+    获取数据库中所有节点的操作系统信息
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[OSInfo]
+    """
+    os_infos: List[OSInfo] = []
+    cursor = conn.cursor()
+    cursor.execute("""
+    WITH ip_node_map as (SELECT ip_address,
+                                GROUP_CONCAT(CONCAT(TYPE, '(', TYPE_COUNT, ')') ORDER BY TYPE) AS TYPES_COUNT
+                         FROM (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1) AS ip_address,
+                                      TYPE,
+                                      COUNT(*)                          AS TYPE_COUNT
+                               FROM INFORMATION_SCHEMA.CLUSTER_INFO
+                               GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1), TYPE) node_type_count
+                         GROUP BY ip_address),
+         os_info AS (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1)                         AS IP_ADDRESS,
+                            MAX(CASE WHEN NAME = 'cpu-physical-cores' THEN VALUE END) AS CPU_CORES,
+                            MAX(CASE WHEN NAME = 'capacity' THEN VALUE END)           AS MEMORY_CAPACITY,
+                            MAX(CASE WHEN NAME = 'cpu-arch' THEN VALUE END)           AS CPU_ARCH
+                     FROM INFORMATION_SCHEMA.CLUSTER_HARDWARE
+                     WHERE (DEVICE_TYPE = 'cpu' AND DEVICE_NAME = 'cpu' AND NAME IN ('cpu-arch', 'cpu-physical-cores'))
+                        OR (DEVICE_TYPE = 'memory' AND DEVICE_NAME = 'memory' AND NAME = 'capacity')
+                     GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1)),
+         ip_hostname_map as (select substring_index(instance, ':', 1) as ip_address,
+                                    value                             as hostname
+                             from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO
+                             where name = 'kernel.hostname'
+                             group by ip_address, hostname)
+    select c.hostname,
+           a.ip_address,
+           types_count,
+           cpu_arch,
+           cpu_cores,
+           round(memory_capacity / 1024 / 1024 / 1024, 1) as memory_capacity_gb
+    from ip_node_map a
+             join os_info b
+                  on a.ip_address = b.ip_address
+             join ip_hostname_map c on a.ip_address = c.ip_address;
+    """)
+    for row in cursor:
+        os_info = OSInfo()
+        os_info.hostname = row[0]
+        os_info.ip_address = row[1]
+        os_info.types_count = row[2]
+        os_info.cpu_arch = row[3]
+        os_info.cpu_cores = row[4]
+        os_info.memory_capacity_gb = row[5]
+        os_infos.append(os_info)
+    cursor.close()
+    return os_infos
+
+# -- 查看磁盘使用率情况
+# with disk_info as (select a.time,
+#                           a.device,
+#                           a.instance,
+#                           substring_index(a.instance, ':', 1)     as ip_address,
+#                           a.fstype,
+#                           a.mountpoint,
+#                           round(a.value / 1024 / 1024 / 1024, 2)  as aval_size_gb,
+#                           round(a.value / 1024 / 1024 / 1024, 2)  as total_size_gb,
+#                           round((b.value - a.value) / b.value, 2) as used_percent
+#                    from METRICS_SCHEMA.node_disk_available_size a,
+#                         METRICS_SCHEMA.node_disk_size b
+#                    where a.time = b.time
+#                      and a.instance = b.instance
+#                      and a.device = b.device
+#                      and a.mountpoint = b.mountpoint
+#                      and a.time = now()
+#                      and a.mountpoint like '%%'),
+#      ip_host_map as (select substring_index(instance, ':', 1) as ip_address,
+#                             value                             as hostname
+#                      from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO
+#                      where name = 'kernel.hostname'
+#                      group by ip_address, hostname),
+#      ip_node_map as (SELECT ip_address,
+#                             GROUP_CONCAT(CONCAT(TYPE, '(', TYPE_COUNT, ')') ORDER BY TYPE) AS TYPES_COUNT
+#                      FROM (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1) AS ip_address,
+#                                   TYPE,
+#                                   COUNT(*)                          AS TYPE_COUNT
+#                            FROM INFORMATION_SCHEMA.CLUSTER_INFO
+#                            GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1), TYPE) node_type_count
+#                      GROUP BY ip_address)
+# select a.time,
+#        a.ip_address,
+#        b.hostname,
+#        c.TYPES_COUNT,
+#        a.fstype,
+#        a.mountpoint,
+#        a.aval_size_gb,
+#        a.total_size_gb,
+#        a.used_percent
+# from disk_info a
+#          left join ip_host_map b on a.ip_address = b.ip_address
+#          left join ip_node_map c on a.ip_address = c.ip_address
+# order by a.time, a.device, a.instance;
+class DiskInfo(BaseTable):
+    def __init__(self):
+        self.time = ""
+        self.ip_address = ""
+        self.hostname = ""
+        self.types_count = ""
+        self.fstype = ""
+        self.mountpoint = ""
+        self.aval_size_gb = 0.0
+        self.total_size_gb = 0.0
+        self.used_percent = 0.0
+        super().__init__()
+
+def get_disk_info(conn):
+    """
+    获取数据库中所有节点的磁盘使用率信息
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[DiskInfo]
+    """
+    disk_infos: List[DiskInfo] = []
+    cursor = conn.cursor()
+    cursor.execute("""
+    with disk_info as (select a.time,
+                              a.device,
+                              a.instance,
+                              substring_index(a.instance, ':', 1)     as ip_address,
+                              a.fstype,
+                              a.mountpoint,
+                              round(a.value / 1024 / 1024 / 1024, 2)  as aval_size_gb,
+                              round(a.value / 1024 / 1024 / 1024, 2)  as total_size_gb,
+                              round((b.value - a.value) / b.value, 2) as used_percent
+                       from METRICS_SCHEMA.node_disk_available_size a,
+                            METRICS_SCHEMA.node_disk_size b
+                       where a.time = b.time
+                         and a.instance = b.instance
+                         and a.device = b.device
+                         and a.mountpoint = b.mountpoint
+                         and a.time = now()
+                         and a.mountpoint like '%%'),
+         ip_host_map as (select substring_index(instance, ':', 1) as ip_address,
+                                value                             as hostname
+                         from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO
+                         where name = 'kernel.hostname'
+                         group by ip_address, hostname),
+         ip_node_map as (SELECT ip_address,
+                                GROUP_CONCAT(CONCAT(TYPE, '(', TYPE_COUNT, ')') ORDER BY TYPE) AS TYPES_COUNT
+                         FROM (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1) AS ip_address,
+                                      TYPE,
+                                      COUNT(*)                          AS TYPE_COUNT
+                               FROM INFORMATION_SCHEMA.CLUSTER_INFO
+                               GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1), TYPE) node_type_count
+                         GROUP BY ip_address)
+    select a.time,
+           a.ip_address,
+           b.hostname,
+           c.TYPES_COUNT,
+           a.fstype,
+           a.mountpoint,
+           a.aval_size_gb,
+           a.total_size_gb,
+           a.used_percent
+    from disk_info a
+             left join ip_host_map b on a.ip_address = b.ip_address
+             left join ip_node_map c on a.ip_address = c.ip_address
+    order by a.time, a.device, a.instance;
+    """)
+    for row in cursor:
+        disk_info = DiskInfo()
+        disk_info.time = row[0]
+        disk_info.ip_address = row[1]
+        disk_info.hostname = row[2]
+        disk_info.types_count = row[3]
+        disk_info.fstype = row[4]
+        disk_info.mountpoint = row[5]
+        disk_info.aval_size_gb = row[6]
+        disk_info.total_size_gb = row[7]
+        disk_info.used_percent = row[8]
+        disk_infos.append(disk_info)
+    cursor.close()
+    return disk_infos
+
+# select TABLE_SCHEMA,TABLE_NAME, table_rows,avg_row_length as avg_row_length_byte,round((DATA_LENGTH + INDEX_LENGTH) / 1024/1024/1024,2) as table_size_gb from INFORMATION_SCHEMA.tables where table_type='BASE TABLE' and (DATA_LENGTH + INDEX_LENGTH) / 1024/1024/1024 > 10 or  table_rows > 5000000;
+class TableInfo(BaseTable):
+    def __init__(self):
+        self.table_schema = ""
+        self.table_name = ""
+        self.table_rows = 0
+        self.avg_row_length_byte = 0
+        self.table_size_gb = 0.0
+        super().__init__()
+
+def get_table_info(conn):
+    """
+    获取数据库中所有表的信息
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[TableInfo]
+    """
+    table_infos: List[TableInfo] = []
+    cursor = conn.cursor()
+    cursor.execute("""
+    select TABLE_SCHEMA,TABLE_NAME, table_rows,avg_row_length as avg_row_length_byte,round((DATA_LENGTH + INDEX_LENGTH) / 1024/1024/1024,2) as table_size_gb from INFORMATION_SCHEMA.tables where table_type='BASE TABLE' and (DATA_LENGTH + INDEX_LENGTH) / 1024/1024/1024 > 10 or  table_rows > 5000000;
+    """)
+    for row in cursor:
+        table_info = TableInfo()
+        table_info.table_schema = row[0]
+        table_info.table_name = row[1]
+        table_info.table_rows = row[2]
+        table_info.avg_row_length_byte = row[3]
+        table_info.table_size_gb = row[4]
+        table_infos.append(table_info)
+    cursor.close()
+    return table_infos
+
+# -- 数据库内存增长率，只查看最近1周的各os内存增长率情况，每小时打印一次
+# set @@tidb_metric_query_step = 3600;
+# set @@tidb_metric_query_range_duration = 30;
+# WITH ip_node_map as (SELECT ip_address,
+#                             GROUP_CONCAT(CONCAT(TYPE, '(', TYPE_COUNT, ')') ORDER BY TYPE) AS TYPES_COUNT
+#                      FROM (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1) AS ip_address,
+#                                   TYPE,
+#                                   COUNT(*)                          AS TYPE_COUNT
+#                            FROM INFORMATION_SCHEMA.CLUSTER_INFO
+#                            GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1), TYPE) node_type_count
+#                      GROUP BY ip_address),
+#      os_info AS (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1)                         AS IP_ADDRESS,
+#                         MAX(CASE WHEN NAME = 'cpu-physical-cores' THEN VALUE END) AS CPU_CORES,
+#                         MAX(CASE WHEN NAME = 'capacity' THEN VALUE END)           AS MEMORY_CAPACITY,
+#                         MAX(CASE WHEN NAME = 'cpu-arch' THEN VALUE END)           AS CPU_ARCH
+#                  FROM INFORMATION_SCHEMA.CLUSTER_HARDWARE
+#                  WHERE (DEVICE_TYPE = 'cpu' AND DEVICE_NAME = 'cpu' AND NAME IN ('cpu-arch', 'cpu-physical-cores'))
+#                     OR (DEVICE_TYPE = 'memory' AND DEVICE_NAME = 'memory' AND NAME = 'capacity')
+#                  GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1)),
+#      ip_hostname_map as (select substring_index(instance, ':', 1) as ip_address,
+#                                 value                             as hostname
+#                          from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO
+#                          where name = 'kernel.hostname'
+#                          group by ip_address, hostname)
+# select time,
+#        substring_index(instance, ':', 1) as ip_address,
+#        c.hostname,
+#        b.TYPES_COUNT,
+#        round(value / 100, 2)             as used_percent
+# from METRICS_SCHEMA.node_memory_usage a
+#          join ip_node_map b on substring_index(instance, ':', 1) = b.ip_address
+#          join ip_hostname_map c on substring_index(instance, ':', 1) = c.ip_address
+# where a.time between date_sub(now(), interval 7 day) and now();
+class MemoryUsageDetail(BaseTable):
+    def __init__(self):
+        self.time = ""
+        self.ip_address = ""
+        self.hostname = ""
+        self.types_count = ""
+        self.used_percent = 0.0
+        super().__init__()
+
+def get_memory_detail(conn):
+    """
+    获取数据库中所有节点的内存使用率信息
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[MemoryUsageDetail]
+    """
+    memory_infos: List[MemoryUsageDetail] = []
+    cursor = conn.cursor()
+    cursor.execute("""
+    WITH ip_node_map as (SELECT ip_address,
+                                GROUP_CONCAT(CONCAT(TYPE, '(', TYPE_COUNT, ')') ORDER BY TYPE) AS TYPES_COUNT
+                         FROM (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1) AS ip_address,
+                                      TYPE,
+                                      COUNT(*)                          AS TYPE_COUNT
+                               FROM INFORMATION_SCHEMA.CLUSTER_INFO
+                               GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1), TYPE) node_type_count
+                         GROUP BY ip_address),
+         os_info AS (SELECT SUBSTRING_INDEX(INSTANCE, ':', 1)                         AS IP_ADDRESS,
+                            MAX(CASE WHEN NAME = 'cpu-physical-cores' THEN VALUE END) AS CPU_CORES,
+                            MAX(CASE WHEN NAME = 'capacity' THEN VALUE END)           AS MEMORY_CAPACITY,
+                            MAX(CASE WHEN NAME = 'cpu-arch' THEN VALUE END)           AS CPU_ARCH
+                     FROM INFORMATION_SCHEMA.CLUSTER_HARDWARE
+                     WHERE (DEVICE_TYPE = 'cpu' AND DEVICE_NAME = 'cpu' AND NAME IN ('cpu-arch', 'cpu-physical-cores'))
+                        OR (DEVICE_TYPE = 'memory' AND DEVICE_NAME = 'memory' AND NAME = 'capacity')
+                     GROUP BY SUBSTRING_INDEX(INSTANCE, ':', 1)),
+         ip_hostname_map as (select substring_index(instance, ':', 1) as ip_address,
+                                value                             as hostname
+                         from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO
+                         where name = 'kernel.hostname'
+                         group by ip_address, hostname)
+    select time,
+           substring_index(instance, ':', 1) as ip_address,
+           c.hostname,
+           b.TYPES_COUNT,
+           round(value / 100, 2)             as used_percent
+    from METRICS_SCHEMA.node_memory_usage a
+             join ip_node_map b on substring_index(instance, ':', 1) = b.ip_address
+             join ip_hostname_map c on substring_index(instance, ':', 1) = c.ip_address
+    where a.time between date_sub(now(), interval 7 day) and now();
+    """)
+    for row in cursor:
+        memory_info = MemoryUsageDetail()
+        memory_info.time = row[0]
+        memory_info.ip_address = row[1]
+        memory_info.hostname = row[2]
+        memory_info.types_count = row[3]
+        memory_info.used_percent = row[4]
+        memory_infos.append(memory_info)
+    cursor.close()
+    return memory_infos
+
+# -- 下面语句统计每个节点的，连接数总量、活跃连接数，对于整个集群的只需要汇总即可
+# select b.type, b.hostname, a.instance, a.connection_count,a.active_connection_count
+# from (select instance,
+#              count(*) as connection_count,
+#              sum(case when COMMAND !='Sleep' then 1 else 0 end) as active_connection_count
+#       from INFORMATION_SCHEMA.CLUSTER_PROCESSLIST
+#       group by instance) a
+#          left join(select a.type,
+#                           a.INSTANCE,
+#                           a.value                                                   as hostname,
+#                           concat(substring_index(a.INSTANCE, ':', 1), ':', b.value) as new_instance
+#                    from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO a,
+#                         INFORMATION_SCHEMA.CLUSTER_CONFIG b
+#                    where a.type = 'tidb'
+#                      and a.SYSTEM_TYPE = 'system'
+#                      and a.SYSTEM_NAME = 'sysctl'
+#                      and a.name = 'kernel.hostname'
+#                      and a.INSTANCE = b.INSTANCE
+#                      and b.`key` = 'status.status-port') b on a.INSTANCE = b.new_instance;
+#
+# -- 查看每个节点的连接数配置情况
+# select type,
+#        hostname,
+#        report_instance as instance,
+#        conns           as connection_count,
+#        max_conns       as configured_max_counnection_count,
+#        conn_ratio      as connection_ratio
+# from (select b.type,
+#              b.hostname,
+#              a.instance                                                                 as report_instance,
+#              b.instance,
+#              a.conns,
+#              c.max_conns,
+#              case when c.max_conns <= 0 then 0 else round(a.conns / c.max_conns, 2) end as conn_ratio
+#       from (select instance, cast(value as signed) as conns
+#             from METRICS_SCHEMA.tidb_connection_count
+#             where time = NOW()) a
+#                left join(select a.type,
+#                                 a.instance,
+#                                 a.value                                                   as hostname,
+#                                 concat(substring_index(a.instance, ':', 1), ':', b.value) as new_instance
+#                          from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO a,
+#                               INFORMATION_SCHEMA.CLUSTER_CONFIG b
+#                          where a.type = 'tidb'
+#                            and a.SYSTEM_TYPE = 'system'
+#                            and a.SYSTEM_NAME = 'sysctl'
+#                            and a.name = 'kernel.hostname'
+#                            and a.instance = b.INSTANCE
+#                            and b.`key` = 'status.status-port') b on a.instance = b.new_instance
+#                left join (select row_number() over (partition by instance) as nbr,
+#                                  instance,
+#                                  cast(value as signed)                     as max_conns
+#                           from INFORMATION_SCHEMA.CLUSTER_CONFIG
+#                           where `key` in ('max-server-connections', 'instance.max_connections')) c
+#                          on b.INSTANCE = c.INSTANCE and c.nbr = 1) a;
+class ConnectionInfo(BaseTable):
+    def __init__(self):
+        self.type = ""
+        self.hostname = ""
+        self.instance = ""
+        self.connection_count = 0
+        self.active_connection_count = 0
+        self.configured_max_counnection_count = 0
+        self.connection_ratio = 0.0
+        super().__init__()
+
+def get_connection_info(conn):
+    """
+    获取数据库中所有节点的连接数信息
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[ConnectionInfo]
+    """
+    connection_infos: List[ConnectionInfo] = []
+    cursor = conn.cursor()
+    cursor.execute("""
+    select b.type, b.hostname, a.instance, a.connection_count,a.active_connection_count
+    from (select instance,
+                 count(*) as connection_count,
+                 sum(case when COMMAND !='Sleep' then 1 else 0 end) as active_connection_count
+          from INFORMATION_SCHEMA.CLUSTER_PROCESSLIST
+          group by instance) a
+             left join(select a.type,
+                              a.INSTANCE,
+                              a.value                                                   as hostname,
+                              concat(substring_index(a.INSTANCE, ':', 1), ':', b.value) as new_instance
+                       from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO a,
+                            INFORMATION_SCHEMA.CLUSTER_CONFIG b
+                       where a.type = 'tidb'
+                         and a.SYSTEM_TYPE = 'system'
+                         and a.SYSTEM_NAME = 'sysctl'
+                         and a.name = 'kernel.hostname'
+                         and a.INSTANCE = b.INSTANCE
+                         and b.`key` = 'status.status-port') b on a.INSTANCE = b.new_instance;
+    """)
+    for row in cursor:
+        connection_info = ConnectionInfo()
+        connection_info.type = row[0]
+        connection_info.hostname = row[1]
+        connection_info.instance = row[2]
+        connection_info.connection_count = row[3]
+        connection_info.active_connection_count = row[4]
+        connection_infos.append(connection_info)
+    cursor.close()
+    return connection_infos
 
 if __name__ == "__main__":
     # 打印日志到终端，打印行号，日期等
