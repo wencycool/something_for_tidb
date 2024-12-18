@@ -15,6 +15,8 @@ def fetch_data(conn, query):
 
 
 def generate_html_table(table_id, column_names, rows):
+    if not column_names or not rows:
+        return "<p>No data available</p>\n"
     html_table = f"<table id='{table_id}' class='display'>\n"
     html_table += "  <thead><tr>\n"
     for column_name in column_names:
@@ -26,8 +28,7 @@ def generate_html_table(table_id, column_names, rows):
         html_table += "  <tr>\n"
         for cell in row:
             if isinstance(cell, str):
-                cell = cell.replace("└─", "&boxur;").replace("\n", "<br>").replace("│", "&boxv;").replace("├─",
-                                                                                                          "&boxvr;")
+                cell = cell.replace("└─", "&boxur;").replace("\n", "<br>").replace("│", "&boxv;").replace("├─", "&boxvr;")
             html_table += f"    <td><pre><span class=\"custom-font\">{cell}</span></pre></td>\n"
         html_table += "  </tr>\n"
     html_table += "  </tbody>\n"
@@ -35,8 +36,10 @@ def generate_html_table(table_id, column_names, rows):
     return html_table
 
 # column_names第一列为时间，后面的列为数据
-def generate_html_chart(column_names, rows, title="", legends=None):
+def generate_html_chart1(column_names, rows, title="", legends=None):
     # 提取时间和分类数据
+    if not column_names or not rows:
+        return "<p>No data available</p>\n"
     times = [row[0] for row in rows]
     series_data = {column_names[i]: [row[i] for row in rows] for i in range(1, len(column_names))}
 
@@ -68,6 +71,17 @@ def generate_html_chart(column_names, rows, title="", legends=None):
     html_template = f"""
     
     <div id="chart"></div>
+    <style>
+       
+        #chart {{
+            width: 80%;
+            height: 500px;
+            margin: 20px auto;
+            border: 1px solid #ccc;
+            background-color: #fff;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }}
+    </style>
     <script>
         // 初始化图表
         var chart = echarts.init(document.getElementById('chart'));
@@ -135,6 +149,52 @@ def generate_html_chart(column_names, rows, title="", legends=None):
     return html_template
 
 
+def generate_html_chart(chart_id, column_names, rows, title="", legends=None):
+    import json
+
+    if legends is None:
+        legends = column_names[1:]
+
+    x_axis = [row[0] for row in rows]
+    series_data = []
+    color_palette = ['#5470C6', '#91CC75', '#EE6666', '#73C0DE', '#3BA272', '#FC8452']
+
+    for i, legend in enumerate(legends):
+        series_data.append({
+            "name": legend,
+            "type": "line",
+            "data": [row[i + 1] for row in rows],
+            "smooth": True,
+            "lineStyle": {"width": 2},
+            "itemStyle": {"color": color_palette[i % len(color_palette)]}
+        })
+
+    option = {
+        "title": {"text": title, "left": "center", "textStyle": {"fontSize": 16, "fontWeight": "bold"}},
+        "tooltip": {"trigger": "axis"},
+        "legend": {"data": legends, "top": "8%", "textStyle": {"fontSize": 12}},
+        "grid": {"left": "5%", "right": "5%", "bottom": "10%", "containLabel": True},
+        "xAxis": {"type": "category", "data": x_axis, "axisLabel": {"rotate": 30}},
+        "yAxis": {"type": "value"},
+        "dataZoom": [{"type": "slider", "start": 0, "end": 100}, {"type": "inside"}],
+        "series": series_data
+    }
+
+    html_template = f"""
+    <div id="{chart_id}" style="width: 100%; height: 400px; margin: 0 auto; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);"></div>
+    <script>
+        var chartDom = document.getElementById('{chart_id}');
+        var myChart = echarts.init(chartDom);
+        var option = {json.dumps(option)};
+        myChart.setOption(option);
+        window.addEventListener('resize', function() {{
+            myChart.resize();
+        }});
+    </script>
+    """
+    return html_template
+
+
 def header(local=True):
     """
     生成html的头部
@@ -157,6 +217,20 @@ def header(local=True):
         <link rel="stylesheet" href="https://cdn.datatables.net/fixedheader/3.1.9/css/fixedHeader.dataTables.min.css">
         <link rel="stylesheet" href="https://cdn.datatables.net/responsive/2.2.7/css/responsive.dataTables.min.css">
         """
+    # 将echart放到前面，避免无法渲染
+    java_scripts = ""
+    if local:
+        js_file="js/echarts.min.js"
+        js_file=Path(__file__).parent.joinpath(js_file)
+        with open(js_file, 'r', encoding='utf-8') as file:
+            echarts_content = file.read()
+        java_scripts += f"<script>{echarts_content}</script>\n"
+    else:
+        java_scripts = """
+        <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+        """
+
+
     header = """
     <!DOCTYPE html>
     <html lang="en">
@@ -215,6 +289,7 @@ def header(local=True):
             box-sizing: border-box;
         }
         </style>
+        """ + java_scripts + """
         </head>
         <body>
         """
@@ -230,7 +305,7 @@ def footer(local=True):
     # 找到js目录下所有的js文件，要确保顺序，因为有依赖关系
     # js_files = list(pathlib.Path('js').glob('*.js'))
     js_files = ['js/jquery-3.6.0.min.js', 'js/jquery-ui.min.js', 'js/jquery.dataTables.min.js',
-                'js/dataTables.fixedHeader.min.js', 'js/dataTables.responsive.min.js', 'js/echarts.min.js']
+                'js/dataTables.fixedHeader.min.js', 'js/dataTables.responsive.min.js']
     # 生成jscript代码，嵌入到html中
     jscripts = ""
     if local:
@@ -308,7 +383,7 @@ def report(in_file, out_file):
         "Node Info": ["table","SELECT * FROM tidb_nodeinfo", "查询每个节点的信息，包括节点的IP地址、端口、状态、版本、启动时间、上线时间、下线时间、节点类型、节点角色、节点状态、节点状态描述"],
         "Os Info": ["table","SELECT * FROM tidb_osinfo", "查询每个节点的操作系统信息，包括CPU数和内存大小"],
         "Disk Info": ["table","SELECT * FROM tidb_diskinfo where used_percent >0.4", "查询每个节点的磁盘信息，包括磁盘的挂载点、磁盘大小、磁盘使用率（大于70%）"],
-        "Memory Info": ["table","SELECT time,used_percent FROM tidb_memoryinfo", "查询每个节点的内存信息，包括内存大小、内存使用率"],
+        "Memory Info": ["chart","SELECT time,used_percent,used_percent+0.5 FROM tidb_memoryusagedetail", "查询每个节点的内存信息，包括内存大小、内存使用率"],
         "Variables": ["table","SELECT * FROM tidb_variable", "查询tidb的配置信息,包括集群变量和系统全局变量"],
         "Column Collations": ["table","SELECT * FROM tidb_columncollation", "查询表字段上的排序规则，如果不是utf8mb4_bin则会列出（可能会导致索引失效）"],
         "User Privileges": ["table","SELECT * FROM tidb_userprivilege", "查询用户权限信息，包括用户的权限和角色,多个权限则排序后按照逗号分隔"],
@@ -336,12 +411,12 @@ def report(in_file, out_file):
         html_content += f"<small style='color: black; font-size: small;'>{describe}</small><br></br>\n"
         if query_list[0] == "chart":
             # column_names第一列为时间，后面的列为数据
-            html_content += generate_html_chart(column_names, rows, title)
+            html_content += generate_html_chart(title,column_names, rows, title)
         else:
             html_content += generate_html_table(table_id, column_names, rows)
     html_content += "</div>\n"
-    html_content += footer()
     html_content += "</body>\n"
+    html_content += footer()
 
     with open(out_file, 'w', encoding='utf-8') as file:
         file.write(html_content)
