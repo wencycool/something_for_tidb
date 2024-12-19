@@ -21,6 +21,9 @@ functions_to_save = [
     get_lock_source_change,
     get_active_connection_info,
     get_metadata_lock_wait,
+    get_qps,
+    get_avg_response_time,
+    get_io_response_time,
     get_node_info,
     get_os_info,
     get_cpu_usage,
@@ -279,7 +282,11 @@ def collect(args):
             pool = create_connection_pool(ip, port, user, password)
             # conn = pool.connection()
             # todo 先设置check_same_thread=False允许并行写入，后续考虑SQLiteConnectionManager替代
-            out_conn = sqlite3.connect(f"{args.output_dir}/{cluster_name}.sqlite3",check_same_thread=False)
+            sqlite3_file = f"{args.output_dir}/{cluster_name}.sqlite3"
+            # 如果存在先删除
+            if Path(sqlite3_file).exists():
+                Path(sqlite3_file).unlink()
+            out_conn = sqlite3.connect(sqlite3_file,check_same_thread=False)
             out_conn.text_factory = str
 
             execute_tasks(out_conn, pool, functions_to_save)
