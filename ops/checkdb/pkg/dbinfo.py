@@ -1093,7 +1093,6 @@ class MetadataLockWait(BaseTable):
         self.ddl_job_tablename = ""
         self.ddl_sql = ""
         self.waitter_session_id = 0
-        self.waitter_txnstart = ""
         self.waitter_sqls = ""
         super().__init__()
 
@@ -1113,7 +1112,6 @@ def get_metadata_lock_wait(conn):
            tmv.table_name                                       ddl_job_tablename,
            tmv.query                                            ddl_sql,
            tmv.session_id                                    as waitter_session_id,
-           tmv.txnstart                                      as waitter_txnstart,
            sql_digests                                       as waitter_sqls
     from mysql.tidb_mdl_view tmv;
     """)
@@ -1125,8 +1123,7 @@ def get_metadata_lock_wait(conn):
         metadata_lock_wait.ddl_job_tablename = row[3]
         metadata_lock_wait.ddl_sql = row[4]
         metadata_lock_wait.waitter_session_id = row[5]
-        metadata_lock_wait.waitter_txnstart = row[6]
-        metadata_lock_wait.waitter_sqls = row[7]
+        metadata_lock_wait.waitter_sqls = row[6]
         metadata_lock_waits.append(metadata_lock_wait)
     cursor.close()
     return metadata_lock_waits
