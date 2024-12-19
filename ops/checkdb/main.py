@@ -41,6 +41,28 @@ functions_to_save = [
     get_duplicate_indexes,
     """
 
+# 初始化sqlite3中的表
+def init_sqlite3_db(conn):
+    # 如果在这里不初始化表，那么会在数据插入时自动创建表，但是要注意如果没有数据插入，那么表也不会创建
+    table = {}
+    table['tidb_connectioninfo'] = 'CREATE TABLE if not exists tidb_connectioninfo (type varchar(512),hostname varchar(512),instance varchar(512),connection_count int,active_connection_count int,configured_max_counnection_count int,connection_ratio float)'
+    table['tidb_activesessioncount'] = 'CREATE TABLE if not exists tidb_activesessioncount (total_active_sessions int,lock_waiting_sessions int,metadata_lock_waiting_sessions int)'
+    table['tidb_qps'] = 'CREATE TABLE if not exists tidb_qps (time text,qps float)'
+    table['tidb_avgresponsetime'] = 'CREATE TABLE if not exists tidb_avgresponsetime (instance varchar(512),time text,avg_response_time_ms float)'
+    table['tidb_ioresponsetime'] = 'CREATE TABLE if not exists tidb_ioresponsetime (time text,instance varchar(512),hostname varchar(512),types_on_host varchar(512),device varchar(512),mapper_device varchar(512),mount_point varchar(512),iops float,io_util float,io_size_kb float,read_latency_ms float,write_latency_ms float,disk_read_bytes_mb float,disk_write_bytes_mb float,cpu_used float)'
+    table['tidb_nodeinfo'] = 'CREATE TABLE if not exists tidb_nodeinfo (type varchar(512),instance varchar(512),status_address varchar(512),version varchar(512),start_time varchar(512),uptime varchar(512),server_id int)'
+    table['tidb_osinfo'] = 'CREATE TABLE if not exists tidb_osinfo (hostname varchar(512),ip_address varchar(512),types_count varchar(512),cpu_arch varchar(512),cpu_cores int,memory_capacity_gb float)'
+    table['tidb_cpuusage'] = 'CREATE TABLE if not exists tidb_cpuusage (time text,hostname varchar(512),ip varchar(512),types varchar(512),cpu_used_percent float)'
+    table['tidb_diskinfo'] = 'CREATE TABLE if not exists tidb_diskinfo (time varchar(512),ip_address varchar(512),hostname varchar(512),types_count varchar(512),fstype varchar(512),mountpoint varchar(512),aval_size_gb float,total_size_gb float,used_percent float)'
+    table['tidb_memoryusagedetail'] = 'CREATE TABLE if not exists tidb_memoryusagedetail (time varchar(512),ip_address varchar(512),hostname varchar(512),types_count varchar(512),used_percent float)'
+    table['tidb_lockchain'] = 'CREATE TABLE tidb_lockchain (waiting_instance varchar(512),waiting_user varchar(512),waiting_client_ip varchar(512),waiting_transaction varchar(512),waiting_duration_sec int,waiting_current_sql_digest varchar(512),waiting_sql varchar(512),lock_chain_node_type varchar(512),holding_session_id int,kill_holding_session_cmd varchar(512),holding_instance varchar(512),holding_user varchar(512),holding_client_ip varchar(512),holding_transaction varchar(512),holding_sql_digest varchar(512),holding_sql_source varchar(512),holding_sql varchar(512))'
+    table['tidb_locksourcechange'] = 'CREATE TABLE tidb_locksourcechange (source_session_id int,cycle1 int,cycle2 int,cycle3 int,status varchar(512))'
+    table['tidb_metadatalockwait'] = 'CREATE TABLE tidb_metadatalockwait (ddl_job varchar(512),cancel_ddl_job varchar(512),ddl_job_dbname varchar(512),ddl_job_tablename varchar(512),ddl_sql varchar(512),waitter_session_id int,waitter_sqls varchar(512))'
+    for table_name, sql in table.items():
+        conn.execute(sql)
+
+
+
 def set_logger(log_level):
     """
     设置日志级别
@@ -289,7 +311,8 @@ def collect(args):
                 Path(sqlite3_file).unlink()
             out_conn = sqlite3.connect(sqlite3_file,check_same_thread=False)
             out_conn.text_factory = str
-
+            # 初始化数据表，为了让活动连接数，锁等待的汇总数据和明细数据对齐，会采用明细数据做汇总的方式计算汇总数据
+            init_sqlite3_db(out_conn)
             execute_tasks(out_conn, pool, functions_to_save)
 
             # conn.close()

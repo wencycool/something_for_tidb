@@ -36,13 +36,16 @@ def report_queries():
     ]
     queries["连接数分布情况"] = [
         "table",
-        "SELECT * FROM tidb_connectioninfo",
+        "SELECT type,hostname,instance,connection_count,configured_max_counnection_count,connection_ratio FROM tidb_connectioninfo",
         "各tidb节点连接数分布情况"
     ]
     queries["活动连接数汇总"] = [
         "table",
-        "SELECT * FROM tidb_activesessioncount",
-        "总活动连接数信息，包括正在执行语句和锁等待的连接数"
+        """select sum(active_count) as active_sessions,
+       (select count(*) from tidb_lockchain) as lock_waiting_sessions,
+       (select count(*) from tidb_metadatalockwait) as ddl_waiting_sessions
+       from tidb_activeconnectioninfo;""",
+        "总活动连接数信息，包括正在执行语句和锁等待的连接数，这里的ddl_waiting_sessions指示DDL等待其它事务提交情况（在tidb v6.5以及以后版本中DDL不会阻塞其它事务提交）"
     ]
     queries["活动连接数详情"] = [
         "table",
