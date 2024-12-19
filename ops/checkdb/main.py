@@ -23,6 +23,7 @@ functions_to_save = [
     get_metadata_lock_wait,
     get_node_info,
     get_os_info,
+    get_cpu_usage,
     get_disk_info,
     get_table_info,
     get_memory_detail,
