@@ -1,5 +1,5 @@
 # 限制python的内存使用不超过8GB
-
+import logging
 
 def set_max_memory(max_memory=4 * 1024 * 1024 * 1024):
     """
@@ -13,3 +13,18 @@ def set_max_memory(max_memory=4 * 1024 * 1024 * 1024):
     except ImportError:
         return
 
+
+# 装饰器来给函数设置异常处理
+def catch_exception(func):
+    """使用说明：
+    @catch_exception
+    def func():
+        pass
+    """
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            logging.error(e)
+            return None
+    return wrapper
