@@ -114,7 +114,7 @@ from tidb_locksourcechange""",
     ]
     queries["元数据锁"] = [
         "table",
-        """select * from metadatalockwait""",
+        """select * from tidb_metadatalockwait""",
         "查询元数据锁等待详情"
     ]
     queries["集群QPS"] = [
@@ -122,10 +122,10 @@ from tidb_locksourcechange""",
         "select * from tidb_qps;",
         "查询集群QPS"
     ]
-    queries["平均响应时间"] = [
+    queries["数据库平均响应时间"] = [
         "chart",
-        "select * from tidb_avgresponsetime;",
-        "语句平均响应时间"
+        "select time,instance,avg_response_time_ms from tidb_avgresponsetime;",
+        "数据库语句平均响应时间"
     ]
     queries["磁盘IO响应时间"] = [
         "chart",
@@ -181,6 +181,8 @@ def report(in_file, out_file):
             # column_names第一列为时间，后面的列为数据
             if title == "磁盘IO响应时间":
                 html_content += generate_html_chart(table_id, column_names, rows, title, 2)
+            elif title == "数据库平均响应时间":
+                html_content += generate_html_chart(table_id, column_names, rows, title, 1)
             else:
                 html_content += generate_html_chart(table_id,column_names, rows, title, 0)
         else:

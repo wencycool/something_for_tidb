@@ -30,6 +30,8 @@ functions_to_save = [
     get_disk_info,
     get_table_info,
     get_memory_detail,
+]
+"""
     get_variables,
     get_column_collations,
     get_user_privileges,
@@ -37,8 +39,7 @@ functions_to_save = [
     get_slow_query_info,
     get_statement_history,
     get_duplicate_indexes,
-]
-
+    """
 
 def set_logger(log_level):
     """

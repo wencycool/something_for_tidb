@@ -1045,6 +1045,7 @@ class ActiveSessionCount(BaseTable):
     def __init__(self):
         self.total_active_sessions = 0
         self.lock_waiting_sessions = 0
+        self.metadata_lock_waiting_sessions = 0
         super().__init__()
 
 def get_active_session_count(conn):
@@ -1059,7 +1060,8 @@ def get_active_session_count(conn):
     cursor.execute("""
     select
         count(*) as total_active_sessions,
-        coalesce(sum(case when ctt.STATE = "LockWaiting" then 1 else 0 end),0) as lock_waiting_sessions
+        coalesce(sum(case when ctt.STATE = "LockWaiting" then 1 else 0 end),0) as lock_waiting_sessions,
+        (select count(distinct session_id) from mysql.tidb_mdl_view tmv) as metadata_lock_waiting_sessions
     from INFORMATION_SCHEMA.CLUSTER_PROCESSLIST cp
              join INFORMATION_SCHEMA.CLUSTER_TIDB_TRX ctt on cp.INSTANCE = ctt.INSTANCE and cp.ID = ctt.SESSION_ID
     where cp.COMMAND != 'Sleep' and cp.ID != CONNECTION_ID();
@@ -1068,6 +1070,7 @@ def get_active_session_count(conn):
         active_session_count = ActiveSessionCount()
         active_session_count.total_active_sessions = row[0]
         active_session_count.lock_waiting_sessions = row[1]
+        active_session_count.metadata_lock_waiting_sessions = row[2]
         active_session_counts.append(active_session_count)
     cursor.close()
     return active_session_counts
