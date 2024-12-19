@@ -24,6 +24,89 @@ def report_queries():
         "SELECT * FROM tidb_nodeinfo",
         "查询每个节点的信息，包括节点的IP地址、端口、状态、版本、启动时间"
     ]
+    queries["CPU信息"] = [
+        "table",
+        "select a.*,b.cpu_used_percent from tidb_osinfo a,tidb_cpuusage b where a.hostname=b.hostname",
+        "查询每个节点的CPU信息，包括CPU核数、CPU使用率"
+    ]
+    queries["连接数分布情况"] = [
+        "table",
+        "SELECT * FROM tidb_connectioninfo",
+        "各tidb节点连接数分布情况"
+    ]
+    queries["活动连接数汇总"] = [
+        "table",
+        "SELECT * FROM tidb_activesessioncount",
+        "总活动连接数信息，包括正在执行语句和锁等待的连接数"
+    ]
+    queries["活动连接数详情"] = [
+        "table",
+        """
+        select instance,
+       substr(digest,1,16) as short_digest,
+       active_count,
+       active_avg_time_s as avg_time_s,
+       active_total_time_s as total_time_s,
+       expensive_sql,
+       avg_total_keys,
+       avg_processed_keys,
+       avg_result_rows,
+       digest,
+       user_access,
+       ip_access,
+       active_total_mem_mb,
+       active_total_disk_mb,
+       exec_count as history_exec_count,
+       qps as history_qps,
+       avg_latency_s as history_avg_latency_s,
+       avg_scan_keys_per_row as history_avg_scan_keys_per_row,
+       first_seen,
+       last_seen,
+       active_total_factor,
+       active_total_factor_percent,
+       query_sample_text_len200,
+       query_sample_text,
+       session_id_list,
+       id_list_kill
+from tidb_activeconnectioninfo;
+        """,
+        "查询每个节点的活动连接数"
+    ]
+    queries["锁等待详情"] = [
+        "table",
+        """SELECT
+    substr(waiting_current_sql_digest,1,16) as short_waiting_digest,
+    waiting_user,
+    waiting_duration_sec,
+    holding_session_id,
+    holding_user,
+    kill_holding_session_cmd,
+    waiting_instance,
+    waiting_client_ip,
+    waiting_transaction,
+    waiting_current_sql_digest,
+    waiting_sql,
+    holding_instance,
+    holding_client_ip,
+    holding_transaction,
+    holding_sql_digest,
+    holding_sql_source,
+    holding_sql
+    FROM tidb_lockchain""",
+        "查询锁等待详情，以处于等待状态的session为主键"
+    ]
+    queries["锁源头行为判断"] = [
+        "table",
+        """
+select source_session_id,
+       status,
+       concat('kill tidb ', source_session_id, ';') as kill_source_cmd,
+       cycle1,
+       cycle2,
+       cycle3
+from tidb_locksourcechange""",
+        "查询锁等待的源头是否反复变化"
+    ]
     return queries
 
 def report(in_file, out_file):

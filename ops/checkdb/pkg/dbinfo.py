@@ -1637,7 +1637,7 @@ ORDER BY source_session_id;"""
 #        avg_total_keys,                                                                       -- 平均每条记录扫描过的keys数量（gc时间之外的已经插入墓碑标记但是未被rockdb清理的版本）
 #        avg_result_rows,                                                                      -- 平均每条语句返回的行数
 #        avg_scan_keys_per_row,                                                                -- 平均每行扫描的keys数量（包括表和索引）
-#        -- query_sample_text, -- 该语句的样例文本（带有具体值）
+#        query_sample_text, -- 该语句的样例文本（带有具体值）
 #        substring(replace(query_sample_text, '\n', ' '), 1, 200) as query_sample_text_len200, -- 该语句的样例文本（带有具体值）
 #        first_seen,                                                                           -- 该语句在statement_history中的首次出现时间
 #        last_seen,                                                                            -- 该语句在statement_history中的最后一次出现时间
@@ -1676,6 +1676,7 @@ class ActiveConnectionInfo(BaseTable):
         self.avg_total_keys = 0
         self.avg_result_rows = 0
         self.avg_scan_keys_per_row = 0
+        self.query_sample_text = ""
         self.query_sample_text_len200 = ""
         self.first_seen = datetime.now()
         self.last_seen = datetime.now()
@@ -1787,7 +1788,7 @@ select instance,                                                                
        avg_total_keys,                                                                       -- 平均每条记录扫描过的keys数量（gc时间之外的已经插入墓碑标记但是未被rockdb清理的版本）
        avg_result_rows,                                                                      -- 平均每条语句返回的行数
        avg_scan_keys_per_row,                                                                -- 平均每行扫描的keys数量（包括表和索引）
-       -- query_sample_text, -- 该语句的样例文本（带有具体值）
+       query_sample_text, -- 该语句的样例文本（带有具体值）
        substring(replace(query_sample_text, '\n', ' '), 1, 200) as query_sample_text_len200, -- 该语句的样例文本（带有具体值）
        first_seen,                                                                           -- 该语句在statement_history中的首次出现时间
        last_seen,                                                                            -- 该语句在statement_history中的最后一次出现时间
@@ -1829,16 +1830,17 @@ from (select *,
         active_connection_info.avg_total_keys = row[12]
         active_connection_info.avg_result_rows = row[13]
         active_connection_info.avg_scan_keys_per_row = row[14]
-        active_connection_info.query_sample_text_len200 = row[15]
-        active_connection_info.first_seen = row[16]
-        active_connection_info.last_seen = row[17]
-        active_connection_info.active_total_factor = row[18]
-        active_connection_info.active_total_factor_percent = row[19]
-        active_connection_info.expensive_sql = row[20]
-        active_connection_info.user_access = row[21]
-        active_connection_info.ip_access = row[22]
-        active_connection_info.session_id_list = row[23]
-        active_connection_info.id_list_kill = row[24]
+        active_connection_info.query_sample_text = row[15]
+        active_connection_info.query_sample_text_len200 = row[16]
+        active_connection_info.first_seen = row[17]
+        active_connection_info.last_seen = row[18]
+        active_connection_info.active_total_factor = row[19]
+        active_connection_info.active_total_factor_percent = row[20]
+        active_connection_info.expensive_sql = row[21]
+        active_connection_info.user_access = row[22]
+        active_connection_info.ip_access = row[23]
+        active_connection_info.session_id_list = row[24]
+        active_connection_info.id_list_kill = row[25]
         active_connection_infos.append(active_connection_info)
     cursor.close()
     return active_connection_infos
