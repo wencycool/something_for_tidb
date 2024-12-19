@@ -13,6 +13,18 @@ def fetch_data(conn, query):
     cursor.close()
     return column_names, rows
 
+def report_queries():
+    """
+    打印的查询列表
+    :return:
+    """
+    queries = {}
+    queries["节点信息"] = [
+        "table",
+        "SELECT * FROM tidb_nodeinfo",
+        "查询每个节点的信息，包括节点的IP地址、端口、状态、版本、启动时间"
+    ]
+    return queries
 
 def report(in_file, out_file):
     """
@@ -25,9 +37,11 @@ def report(in_file, out_file):
     conn = sqlite3.connect(in_file)
     conn.text_factory = str  # Set character set to UTF-8
     queries = {
-        "Node Info": ["table","SELECT * FROM tidb_nodeinfo", "查询每个节点的信息，包括节点的IP地址、端口、状态、版本、启动时间、上线时间、下线时间、节点类型、节点角色、节点状态、节点状态描述"],
+        "节点信息": ["table","SELECT type as 类型 FROM tidb_nodeinfo", "查询每个节点的信息，包括节点的IP地址、端口、状态、版本、启动时间、上线时间、下线时间、节点类型、节点角色、节点状态、节点状态描述"],
         "Os Info": ["table","SELECT * FROM tidb_osinfo", "查询每个节点的操作系统信息，包括CPU数和内存大小"],
         "Disk Info": ["table","SELECT * FROM tidb_diskinfo where used_percent >0.4", "查询每个节点的磁盘信息，包括磁盘的挂载点、磁盘大小、磁盘使用率（大于70%）"],
+        "当前活动连接数汇总": ["table","SELECT * FROM tidb_activesessioncount", "总活动连接数信息"],
+        "当前活动连接数": ["table","SELECT * FROM tidb_activeconnectioninfo", "查询每个节点的活动连接数"],
         "Memory Info": ["chart","SELECT time,used_percent,used_percent+0.5 FROM tidb_memoryusagedetail", "查询每个节点的内存信息，包括内存大小、内存使用率"],
         "Variables": ["table","SELECT * FROM tidb_variable", "查询tidb的配置信息,包括集群变量和系统全局变量"],
         "Column Collations": ["table","SELECT * FROM tidb_columncollation", "查询表字段上的排序规则，如果不是utf8mb4_bin则会列出（可能会导致索引失效）"],
@@ -37,7 +51,7 @@ def report(in_file, out_file):
         "Duplicate Indexes": ["table","SELECT * FROM tidb_duplicateindex",  "查询表上的冗余索引，state为DUPLICATE_INDEX表示冗余索引（最左前缀覆盖），state为SUSPECTED_DUPLICATE_INDEX表示疑似冗余索引"],
 
     }
-
+    queries = report_queries()
     html_content = header()
     html_content += "<body>\n"
     html_content += "<div class='sidebar'>\n"

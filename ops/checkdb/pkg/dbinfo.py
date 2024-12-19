@@ -7,6 +7,7 @@ from .utils import set_max_memory
 import sqlite3
 from .duplicate_index import Index, get_tableindexes, CONST_DUPLICATE_INDEX, CONST_SUSPECTED_DUPLICATE_INDEX
 
+from .utils import catch_exception
 # 关键字，实例变量不能使用这些关键字
 KEYWORDS = ["class_to_table_name", "fields"]
 # 实例变量是字符串，如果值长度比较长，创建表结构时需要特殊处理
@@ -1031,6 +1032,1305 @@ def get_connection_info(conn):
         connection_infos.append(connection_info)
     cursor.close()
     return connection_infos
+
+
+# 高并发情况下活动连接数情况分析
+# select
+#     count(*) as total_active_sessions,
+#     coalesce(sum(case when ctt.STATE = "LockWaiting" then 1 else 0 end),0) as lock_waiting_sessions
+# from INFORMATION_SCHEMA.CLUSTER_PROCESSLIST cp
+#          join INFORMATION_SCHEMA.CLUSTER_TIDB_TRX ctt on cp.INSTANCE = ctt.INSTANCE and cp.ID = ctt.SESSION_ID
+# where cp.COMMAND != 'Sleep' and cp.ID != CONNECTION_ID();
+class ActiveSessionCount(BaseTable):
+    def __init__(self):
+        self.total_active_sessions = 0
+        self.lock_waiting_sessions = 0
+        super().__init__()
+
+def get_active_session_count(conn):
+    """
+    获取数据库中所有节点的活动连接数信息
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[ActiveSessionCount]
+    """
+    active_session_counts: List[ActiveSessionCount] = []
+    cursor = conn.cursor()
+    cursor.execute("""
+    select
+        count(*) as total_active_sessions,
+        coalesce(sum(case when ctt.STATE = "LockWaiting" then 1 else 0 end),0) as lock_waiting_sessions
+    from INFORMATION_SCHEMA.CLUSTER_PROCESSLIST cp
+             join INFORMATION_SCHEMA.CLUSTER_TIDB_TRX ctt on cp.INSTANCE = ctt.INSTANCE and cp.ID = ctt.SESSION_ID
+    where cp.COMMAND != 'Sleep' and cp.ID != CONNECTION_ID();
+    """)
+    for row in cursor:
+        active_session_count = ActiveSessionCount()
+        active_session_count.total_active_sessions = row[0]
+        active_session_count.lock_waiting_sessions = row[1]
+        active_session_counts.append(active_session_count)
+    cursor.close()
+    return active_session_counts
+
+# 查看元数据锁等待情况，到数据库中执行时候可能会偏慢
+# select tmv.job_id                                        as ddl_job,
+#        concat('admin cancel ddl jobs ', tmv.job_id, ';') as cancel_ddl_job,
+#        tmv.db_name                                          ddl_job_dbname,
+#        tmv.table_name                                       ddl_job_tablename,
+#        tmv.query                                            ddl_sql,
+#        tmv.session_id                                    as waitter_session_id,
+#        tmv.txnstart                                      as waitter_txnstart,
+#        sql_digests                                       as waitter_sqls
+# from mysql.tidb_mdl_view tmv;
+class MetadataLockWait(BaseTable):
+    def __init__(self):
+        self.ddl_job = ""
+        self.cancel_ddl_job = ""
+        self.ddl_job_dbname = ""
+        self.ddl_job_tablename = ""
+        self.ddl_sql = ""
+        self.waitter_session_id = 0
+        self.waitter_txnstart = ""
+        self.waitter_sqls = ""
+        super().__init__()
+
+def get_metadata_lock_wait(conn):
+    """
+    获取数据库中所有节点的元数据锁等待情况
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[MetadataLockWait]
+    """
+    metadata_lock_waits: List[MetadataLockWait] = []
+    cursor = conn.cursor()
+    cursor.execute("""
+    select tmv.job_id                                        as ddl_job,
+           concat('admin cancel ddl jobs ', tmv.job_id, ';') as cancel_ddl_job,
+           tmv.db_name                                          ddl_job_dbname,
+           tmv.table_name                                       ddl_job_tablename,
+           tmv.query                                            ddl_sql,
+           tmv.session_id                                    as waitter_session_id,
+           tmv.txnstart                                      as waitter_txnstart,
+           sql_digests                                       as waitter_sqls
+    from mysql.tidb_mdl_view tmv;
+    """)
+    for row in cursor:
+        metadata_lock_wait = MetadataLockWait()
+        metadata_lock_wait.ddl_job = row[0]
+        metadata_lock_wait.cancel_ddl_job = row[1]
+        metadata_lock_wait.ddl_job_dbname = row[2]
+        metadata_lock_wait.ddl_job_tablename = row[3]
+        metadata_lock_wait.ddl_sql = row[4]
+        metadata_lock_wait.waitter_session_id = row[5]
+        metadata_lock_wait.waitter_txnstart = row[6]
+        metadata_lock_wait.waitter_sqls = row[7]
+        metadata_lock_waits.append(metadata_lock_wait)
+    cursor.close()
+    return metadata_lock_waits
+
+
+# 查找锁源头
+# WITH RECURSIVE lock_chain AS (
+#     -- 初始查询：获取锁等待链，并为锁源头设置级别为 0
+#     SELECT dlw.trx_id                 AS waiting_trx_id,
+#            dlw.current_holding_trx_id AS holding_trx_id,
+#            0                          AS level
+#     FROM information_schema.data_lock_waits dlw
+#     WHERE dlw.current_holding_trx_id is not null and dlw.current_holding_trx_id not in (select distinct trx_id from information_schema.data_lock_waits)
+#     UNION ALL
+#     -- 递归查询：根据持锁事务查找其上的等待链
+#     SELECT lc.waiting_trx_id,
+#            dlw.current_holding_trx_id,
+#            lc.level + 1 AS level
+#     FROM lock_chain lc
+#              JOIN
+#          information_schema.data_lock_waits dlw
+#          ON
+#              lc.holding_trx_id = dlw.trx_id)
+# -- 查询最终结果，关联详细信息
+# SELECT
+#     -- 关联等待事务的信息
+#     pl.instance                                                      AS waiting_instance,
+#     pl.user                                                          AS waiting_user,
+#     SUBSTRING_INDEX(pl.host, ':', 1)                                 AS waiting_client_ip,
+#     lc.waiting_trx_id                                                AS waiting_transaction,
+#     TIMESTAMPDIFF(SECOND, wt.WAITING_START_TIME, NOW())                      AS waiting_duration_sec,
+#     wt.CURRENT_SQL_DIGEST                                            AS waiting_current_sql_digest,
+#     LEFT(wt.CURRENT_SQL_DIGEST_TEXT, 100)                            AS waiting_sql,
+#     -- 关联持锁事务的信息
+#     case when lc.level = 0 then '锁等待链源头->' else '中间节点->' end as lock_chain_node_type,
+#     ht.session_id                                                    AS holding_session_id,
+#     -- 删除语句需要去重
+#     CONCAT('kill tidb ', ht.session_id, ';')                        AS kill_holding_session_cmd,
+#     pl_hold.instance                                                 AS holding_instance,
+#     pl_hold.user                                                     AS holding_user,
+#     SUBSTRING_INDEX(pl_hold.host, ':', 1)                            AS holding_client_ip,
+#     lc.holding_trx_id                                                AS holding_transaction,
+#     -- 持锁事务的 SQL Digest
+#     COALESCE(
+#             ht.current_sql_digest,
+#             JSON_EXTRACT(ht.all_sql_digests, '$[0]')
+#     )                                                                AS holding_sql_digest,
+#     -- 持锁事务的 SQL 来源
+#     CASE
+#         WHEN ht.current_sql_digest IS NOT NULL THEN 'CURRENT'
+#         ELSE 'LAST'
+#         END                                                          AS holding_sql_source,
+#     -- 持锁事务的 SQL 语句
+#     CASE
+#         WHEN ht.current_sql_digest IS NOT NULL THEN LEFT(ht.current_sql_digest_text, 100)
+#         -- 如果只打印一条记录，很多情况下为NULL，因此需要打印所有SQL，但是每条语句最多打印100个字符
+#         ELSE TIDB_DECODE_SQL_DIGESTS(ht.all_sql_digests, 100)
+#         END                                                          AS holding_sql
+# FROM lock_chain lc
+# -- 关联等待事务的详细信息
+#          LEFT JOIN
+#      information_schema.cluster_tidb_trx wt
+#      ON
+#          lc.waiting_trx_id = wt.id
+# -- 关联等待事务的会话和实例信息
+#          LEFT JOIN
+#      information_schema.cluster_processlist pl
+#      ON
+#          wt.instance = pl.instance AND wt.session_id = pl.id
+# -- 关联持锁事务的详细信息
+#          LEFT JOIN
+#      information_schema.cluster_tidb_trx ht
+#      ON
+#          lc.holding_trx_id = ht.id
+# -- 关联持锁事务的会话和实例信息
+#          LEFT JOIN
+#      information_schema.cluster_processlist pl_hold
+#      ON
+#          ht.instance = pl_hold.instance AND ht.session_id = pl_hold.id;
+class LockChain(BaseTable):
+    def __init__(self):
+        self.waiting_instance = ""
+        self.waiting_user = ""
+        self.waiting_client_ip = ""
+        self.waiting_transaction = ""
+        self.waiting_duration_sec = 0
+        self.waiting_current_sql_digest = ""
+        self.waiting_sql = ""
+        self.lock_chain_node_type = ""
+        self.holding_session_id = 0
+        self.kill_holding_session_cmd = ""
+        self.holding_instance = ""
+        self.holding_user = ""
+        self.holding_client_ip = ""
+        self.holding_transaction = ""
+        self.holding_sql_digest = ""
+        self.holding_sql_source = ""
+        self.holding_sql = ""
+        super().__init__()
+
+def get_lock_chain(conn):
+    """
+    获取数据库中所有节点的锁等待链信息
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[LockChain]
+    """
+    lock_chains: List[LockChain] = []
+    cursor = conn.cursor()
+    cursor.execute("""
+    WITH RECURSIVE lock_chain AS (
+        -- 初始查询：获取锁等待链，并为锁源头设置级别为 0
+        SELECT dlw.trx_id                 AS waiting_trx_id,
+               dlw.current_holding_trx_id AS holding_trx_id,
+               0                          AS level
+        FROM information_schema.data_lock_waits dlw
+        WHERE dlw.current_holding_trx_id is not null and dlw.current_holding_trx_id not in (select distinct trx_id from information_schema.data_lock_waits)
+        UNION ALL
+        -- 递归查询：根据持锁事务查找其上的等待链
+        SELECT lc.waiting_trx_id,
+               dlw.current_holding_trx_id,
+               lc.level + 1 AS level
+        FROM lock_chain lc
+                 JOIN
+             information_schema.data_lock_waits dlw
+             ON
+                 lc.holding_trx_id = dlw.trx_id)
+    -- 查询最终结果，关联详细信息
+    SELECT
+        -- 关联等待事务的信息
+        pl.instance                                                      AS waiting_instance,
+        pl.user                                                          AS waiting_user,
+        SUBSTRING_INDEX(pl.host, ':', 1)                                 AS waiting_client_ip,
+        lc.waiting_trx_id                                                AS waiting_transaction,
+        TIMESTAMPDIFF(SECOND, wt.WAITING_START_TIME, NOW())                      AS waiting_duration_sec,
+        wt.CURRENT_SQL_DIGEST                                            AS waiting_current_sql_digest,
+        LEFT(wt.CURRENT_SQL_DIGEST_TEXT, 100)                            AS waiting_sql,
+        -- 关联持锁事务的信息
+        case when lc.level = 0 then '锁等待链源头->' else '中间节点->' end as lock_chain_node_type,
+        ht.session_id                                                    AS holding_session_id,
+        -- 删除语句需要去重
+        CONCAT('kill tidb ', ht.session_id, ';')                        AS kill_holding_session_cmd,
+        pl_hold.instance                                                 AS holding_instance,
+        pl_hold.user                                                     AS holding_user,
+        SUBSTRING_INDEX(pl_hold.host, ':', 1)                            AS holding_client_ip,
+        lc.holding_trx_id                                                AS holding_transaction,
+        -- 持锁事务的 SQL Digest
+        COALESCE(
+                ht.current_sql_digest,
+                JSON_EXTRACT(ht.all_sql_digests, '$[0]')
+        )                                                                AS holding_sql_digest,
+        -- 持锁事务的 SQL 来源
+        CASE
+            WHEN ht.current_sql_digest IS NOT NULL THEN 'CURRENT'
+            ELSE 'LAST'
+            END                                                          AS holding_sql_source,
+        -- 持锁事务的 SQL 语句
+        CASE
+            WHEN ht.current_sql_digest IS NOT NULL THEN LEFT(ht.current_sql_digest_text, 100)
+            -- 如果只打印一条记录，很多情况下为NULL，因此需要打印所有SQL，但是每条语句最多打印100个字符
+            ELSE TIDB_DECODE_SQL_DIGESTS(ht.all_sql_digests, 100)
+            END                                                          AS holding_sql
+    FROM lock_chain lc
+    -- 关联等待事务的详细信息
+             LEFT JOIN
+         information_schema.cluster_tidb_trx wt
+         ON
+             lc.waiting_trx_id = wt.id
+    -- 关联等待事务的会话和实例信息
+                LEFT JOIN
+            information_schema.cluster_processlist pl
+            ON
+                wt.instance = pl.instance AND wt.session_id = pl.id
+    -- 关联持锁事务的详细信息
+                LEFT JOIN
+            information_schema.cluster_tidb_trx ht
+            ON
+                lc.holding_trx_id = ht.id
+    -- 关联持锁事务的会话和实例信息
+                LEFT JOIN
+            information_schema.cluster_processlist pl_hold
+            ON
+                ht.instance = pl_hold.instance AND ht.session_id = pl_hold.id;
+    """)
+    for row in cursor:
+        lock_chain = LockChain()
+        lock_chain.waiting_instance = row[0]
+        lock_chain.waiting_user = row[1]
+        lock_chain.waiting_client_ip = row[2]
+        lock_chain.waiting_transaction = row[3]
+        lock_chain.waiting_duration_sec = row[4]
+        lock_chain.waiting_current_sql_digest = row[5]
+        lock_chain.waiting_sql = row[6]
+        lock_chain.lock_chain_node_type = row[7]
+        lock_chain.holding_session_id = row[8]
+        lock_chain.kill_holding_session_cmd = row[9]
+        lock_chain.holding_instance = row[10]
+        lock_chain.holding_user = row[11]
+        lock_chain.holding_client_ip = row[12]
+        lock_chain.holding_transaction = row[13]
+        lock_chain.holding_sql_digest = row[14]
+        lock_chain.holding_sql_source = row[15]
+        lock_chain.holding_sql = row[16]
+        lock_chains.append(lock_chain)
+    cursor.close()
+    return lock_chains
+
+# 判断锁源头是否发生变化
+# -- 创建临时表用于存储不同周期的锁源头的session_id和周期
+# create temporary table if not exists lock_source_check(source_session_id bigint,cycle int);
+# -- 第一次查询：周期1
+# insert into lock_source_check(source_session_id,cycle)
+# WITH RECURSIVE lock_chain AS (
+#     -- 基础查询：从当前锁等待中获取直接锁关系，并将锁源头的级别标记为 0
+#     SELECT trx_id AS waiting_trx_id,
+#         current_holding_trx_id AS holding_trx_id,
+#         0 AS level
+#     FROM information_schema.data_lock_waits
+#     WHERE current_holding_trx_id is not null and current_holding_trx_id not in (select distinct trx_id from information_schema.data_lock_waits)
+#     UNION ALL
+#     -- 递归查询：将上一层持锁事务作为下一层等待事务，级别递增
+#     SELECT lc.waiting_trx_id,
+#         dlw.current_holding_trx_id AS holding_trx_id,
+#         lc.level + 1 AS level
+#     FROM lock_chain lc
+#         JOIN information_schema.data_lock_waits dlw ON lc.holding_trx_id = dlw.trx_id
+# )
+# SELECT distinct ctx.session_id,1
+# FROM lock_chain lc
+#     left join information_schema.cluster_tidb_trx ctx on lc.holding_trx_id = ctx.id
+# where lc.level = 0;
+#
+# -- 休眠5秒钟
+# select sleep(5);
+# -- 第二次查询：周期2
+# insert into lock_source_check(source_session_id,cycle)
+# WITH RECURSIVE lock_chain AS (
+#     -- 基础查询：从当前锁等待中获取直接锁关系，并将锁源头的级别标记为 0
+#     SELECT trx_id AS waiting_trx_id,
+#         current_holding_trx_id AS holding_trx_id,
+#         0 AS level
+#     FROM information_schema.data_lock_waits
+#     WHERE current_holding_trx_id is not null and current_holding_trx_id not in (select distinct trx_id from information_schema.data_lock_waits)
+#     UNION ALL
+#     -- 递归查询：将上一层持锁事务作为下一层等待事务，级别递增
+#     SELECT lc.waiting_trx_id,
+#         dlw.current_holding_trx_id AS holding_trx_id,
+#         lc.level + 1 AS level
+#     FROM lock_chain lc
+#         JOIN information_schema.data_lock_waits dlw ON lc.holding_trx_id = dlw.trx_id
+# )
+# SELECT distinct ctx.session_id,2
+# FROM lock_chain lc
+#     left join information_schema.cluster_tidb_trx ctx on lc.holding_trx_id = ctx.id
+# where lc.level = 0;
+#
+# -- 休眠5秒钟
+# select sleep(5);
+# -- 第三次查询：周期3
+# insert into lock_source_check(source_session_id,cycle)
+# WITH RECURSIVE lock_chain AS (
+#     -- 基础查询：从当前锁等待中获取直接锁关系，并将锁源头的级别标记为 0
+#     SELECT trx_id AS waiting_trx_id,
+#         current_holding_trx_id AS holding_trx_id,
+#         0 AS level
+#     FROM information_schema.data_lock_waits
+#     WHERE current_holding_trx_id is not null and current_holding_trx_id not in (select distinct trx_id from information_schema.data_lock_waits)
+#     UNION ALL
+#     -- 递归查询：将上一层持锁事务作为下一层等待事务，级别递增
+#     SELECT lc.waiting_trx_id,
+#         dlw.current_holding_trx_id AS holding_trx_id,
+#         lc.level + 1 AS level
+#     FROM lock_chain lc
+#         JOIN information_schema.data_lock_waits dlw ON lc.holding_trx_id = dlw.trx_id
+# )
+# SELECT distinct ctx.session_id,3
+# FROM lock_chain lc
+#     left join information_schema.cluster_tidb_trx ctx on lc.holding_trx_id = ctx.id
+# where lc.level = 0;
+#
+# -- 查询并检查每个 source_session_id 是否在所有3个周期内都存在
+# select '------ 输出结果如下：------';
+# SELECT
+#     source_session_id,
+#     -- 出现的次数，比如cycle1表示在第一个周期内该session_source_id出现的次数（在不重复的情况下为1次）
+#     SUM(CASE WHEN cycle = 1 THEN 1 ELSE 0 END) AS cycle1,
+#     SUM(CASE WHEN cycle = 2 THEN 1 ELSE 0 END) AS cycle2,
+#     SUM(CASE WHEN cycle = 3 THEN 1 ELSE 0 END) AS cycle3,
+#     CASE
+#     WHEN SUM(CASE WHEN cycle = 1 THEN 1 ELSE 0 END) > 0 AND
+#          SUM(CASE WHEN cycle = 2 THEN 1 ELSE 0 END) > 0 AND
+#          SUM(CASE WHEN cycle = 3 THEN 1 ELSE 0 END) > 0
+#         THEN '锁源头不变'
+#     ELSE '锁源头发生变化'
+#     END                                    AS status
+# FROM lock_source_check
+# GROUP BY source_session_id
+# ORDER BY source_session_id;
+#
+# select '------ 输出结束------';
+# drop temporary table if exists lock_source_check;
+class LockSourceChange(BaseTable):
+    def __init__(self):
+        self.source_session_id = 0
+        self.cycle1 = 0
+        self.cycle2 = 0
+        self.cycle3 = 0
+        self.status = ""
+        super().__init__()
+
+
+def get_lock_source_change(conn):
+    """
+    获取数据库中所有节点的锁源头变化信息,该函数会等待多次
+    :param conn: 数据库连接
+    :type conn: pymysql.connections.Connection
+    :rtype: List[LockSourceChange]
+    """
+    lock_source_changes: List[LockSourceChange] = []
+    cursor = conn.cursor()
+    cursor.execute("""create temporary table if not exists lock_source_check(source_session_id bigint,cycle int);""")
+    cursor.execute("""insert into lock_source_check(source_session_id,cycle) 
+WITH RECURSIVE lock_chain AS (
+    -- 基础查询：从当前锁等待中获取直接锁关系，并将锁源头的级别标记为 0
+    SELECT trx_id AS waiting_trx_id,
+        current_holding_trx_id AS holding_trx_id,
+        0 AS level
+    FROM information_schema.data_lock_waits
+    WHERE current_holding_trx_id is not null and current_holding_trx_id not in (select distinct trx_id from information_schema.data_lock_waits)
+    UNION ALL
+    -- 递归查询：将上一层持锁事务作为下一层等待事务，级别递增
+    SELECT lc.waiting_trx_id,
+        dlw.current_holding_trx_id AS holding_trx_id,
+        lc.level + 1 AS level
+    FROM lock_chain lc
+        JOIN information_schema.data_lock_waits dlw ON lc.holding_trx_id = dlw.trx_id
+)
+SELECT distinct ctx.session_id,1
+FROM lock_chain lc
+    left join information_schema.cluster_tidb_trx ctx on lc.holding_trx_id = ctx.id
+where lc.level = 0;""")
+    cursor.execute("""select sleep(5);""")
+    cursor.execute("""insert into lock_source_check(source_session_id,cycle) 
+WITH RECURSIVE lock_chain AS (
+    -- 基础查询：从当前锁等待中获取直接锁关系，并将锁源头的级别标记为 0
+    SELECT trx_id AS waiting_trx_id,
+        current_holding_trx_id AS holding_trx_id,
+        0 AS level
+    FROM information_schema.data_lock_waits
+    WHERE current_holding_trx_id is not null and current_holding_trx_id not in (select distinct trx_id from information_schema.data_lock_waits)
+    UNION ALL
+    -- 递归查询：将上一层持锁事务作为下一层等待事务，级别递增
+    SELECT lc.waiting_trx_id,
+        dlw.current_holding_trx_id AS holding_trx_id,
+        lc.level + 1 AS level
+    FROM lock_chain lc
+        JOIN information_schema.data_lock_waits dlw ON lc.holding_trx_id = dlw.trx_id
+)
+SELECT distinct ctx.session_id,2
+FROM lock_chain lc
+    left join information_schema.cluster_tidb_trx ctx on lc.holding_trx_id = ctx.id
+where lc.level = 0;""")
+    cursor.execute("""select sleep(5);""")
+    cursor.execute("""insert into lock_source_check(source_session_id,cycle) 
+WITH RECURSIVE lock_chain AS (
+    -- 基础查询：从当前锁等待中获取直接锁关系，并将锁源头的级别标记为 0
+    SELECT trx_id AS waiting_trx_id,
+        current_holding_trx_id AS holding_trx_id,
+        0 AS level
+    FROM information_schema.data_lock_waits
+    WHERE current_holding_trx_id is not null and current_holding_trx_id not in (select distinct trx_id from information_schema.data_lock_waits)
+    UNION ALL
+    -- 递归查询：将上一层持锁事务作为下一层等待事务，级别递增
+    SELECT lc.waiting_trx_id,
+        dlw.current_holding_trx_id AS holding_trx_id,
+        lc.level + 1 AS level
+    FROM lock_chain lc
+        JOIN information_schema.data_lock_waits dlw ON lc.holding_trx_id = dlw.trx_id
+)
+SELECT distinct ctx.session_id,3
+FROM lock_chain lc
+    left join information_schema.cluster_tidb_trx ctx on lc.holding_trx_id = ctx.id
+where lc.level = 0;""")
+    # 开始查询结果
+    sql_text = """SELECT 
+    source_session_id,
+    -- 出现的次数，比如cycle1表示在第一个周期内该session_source_id出现的次数（在不重复的情况下为1次）
+    SUM(CASE WHEN cycle = 1 THEN 1 ELSE 0 END) AS cycle1,
+    SUM(CASE WHEN cycle = 2 THEN 1 ELSE 0 END) AS cycle2,
+    SUM(CASE WHEN cycle = 3 THEN 1 ELSE 0 END) AS cycle3,
+    CASE
+    WHEN SUM(CASE WHEN cycle = 1 THEN 1 ELSE 0 END) > 0 AND
+         SUM(CASE WHEN cycle = 2 THEN 1 ELSE 0 END) > 0 AND
+         SUM(CASE WHEN cycle = 3 THEN 1 ELSE 0 END) > 0
+        THEN '锁源头不变'
+    ELSE '锁源头发生变化'
+    END                                    AS status
+FROM lock_source_check
+GROUP BY source_session_id
+ORDER BY source_session_id;"""
+    cursor.execute(sql_text)
+    for row in cursor:
+        lock_source_change = LockSourceChange()
+        lock_source_change.source_session_id = row[0]
+        lock_source_change.cycle1 = row[1]
+        lock_source_change.cycle2 = row[2]
+        lock_source_change.cycle3 = row[3]
+        lock_source_change.status = row[4]
+        lock_source_changes.append(lock_source_change)
+    cursor.execute("""drop temporary table if exists lock_source_check;""")
+    cursor.close()
+    return lock_source_changes
+
+# 当前活动连接数信息
+# -- tiflash中process_keys都为0，因为不走tikv。因此这里暂未兼容走tiflash存储引擎的语句。
+# set session group_concat_max_len = 5242880;
+# with processlist as (select a.*, b.info as current_sql_text
+#                      from (select instance,
+#                                   digest,
+#                                   GROUP_CONCAT(DISTINCT CONCAT(USER, '(', user_count, ')') SEPARATOR
+#                                                ', ')                                                AS user_access,
+#                                   GROUP_CONCAT(DISTINCT CONCAT(ip_address, '(', ip_count, ')') SEPARATOR
+#                                                ', ')                                                AS ip_access,
+#                                   -- 将id 用group_concat聚合，因为一个digest可能对应多个id
+#                                   group_concat(id)                                                  as id_list,
+#                                   concat(group_concat(concat('kill tidb ', id) separator ';'), ';') as id_list_kill,
+#                                   count(*)                                                          as active_count,
+#                                   avg(time) * 2                                                     as active_avg_time,
+#                                   sum(time)                                                         as active_total_time,
+#                                   sum(mem)                                                          as active_total_mem,
+#                                   sum(disk)                                                         as active_total_disk
+#                            from (SELECT *,
+#                                         SUBSTRING_INDEX(HOST, ':', 1)                                      AS ip_address,
+#                                         COUNT(*) OVER (PARTITION BY DIGEST, USER)                          AS user_count,
+#                                         COUNT(*) OVER (PARTITION BY DIGEST, SUBSTRING_INDEX(HOST, ':', 1)) AS ip_count
+#                                  FROM INFORMATION_SCHEMA.CLUSTER_PROCESSLIST) as subquery
+#                            where command != 'Sleep'
+#                              and id != connection_id()
+#                            group by instance, digest) a
+#                               left join (select instance,
+#                                                 digest,
+#                                                 info,
+#                                                 row_number() over (partition by instance,digest) as nbr
+#                                          from information_schema.cluster_processlist) b -- 从该表中获取当前执行的sql文本
+#                                         on a.instance = b.instance and a.digest = b.digest and b.nbr = 1),
+#      statements_history as (select *
+#                             from (select instance,
+#                                          digest,
+#                                          plan_digest,
+#                                          exec_count,
+#                                          exec_count / NULLIF(timestampdiff(second, first_seen, last_seen), 0)       as qps,
+#                                          avg_latency / 1000000000                                                   as avg_latency,
+#                                          avg_processed_keys,
+#                                          avg_total_keys,
+#                                          avg_result_rows,
+#                                          query_sample_text,
+#                                          first_seen,
+#                                          last_seen,
+#                                          AVG_REQUEST_UNIT_READ,
+#                                          row_number() over (partition by instance,digest order by first_seen desc ) as nbr
+#                                   from (select *
+#                                         from information_schema.cluster_statements_summary
+#                                         union all
+#                                         select *
+#                                         from information_schema.cluster_statements_summary_history) a) statements
+#                             where nbr = 1),
+#      result as (select pl.instance                                              as instance,
+#                        pl.id_list                                               as session_id_list,
+#                        pl.id_list_kill                                          as id_list_kill,
+#                        pl.user_access,
+#                        pl.ip_access,
+#                        pl.digest                                                as digest,
+#                        sh.plan_digest                                           as plan_digest,
+#                        pl.active_count,
+#                        pl.active_avg_time,
+#                        pl.active_total_time,
+#                        pl.active_total_mem,
+#                        pl.active_total_disk,
+#                        sh.exec_count,
+#                        sh.qps,
+#                        sh.avg_latency,
+#                        sh.avg_processed_keys,
+#                        sh.avg_total_keys,
+#                        sh.avg_result_rows,
+#                        sh.avg_processed_keys / NULLIF(sh.avg_result_rows, 0)    as avg_scan_keys_per_row,
+#                        coalesce(pl.current_sql_text, sh.query_sample_text)      as query_sample_text,
+#                        sh.first_seen,
+#                        sh.last_seen,
+#                        sh.AVG_REQUEST_UNIT_READ,
+#                        -- 对于7.1以后版本可以用AVG_REQUEST_UNIT_READ来计算factor
+#                        -- pl.active_count * sh.AVG_REQUEST_UNIT_READ          as active_total_factor
+#                        -- 计算该语句的耗时因子，即执行次数*平均耗时*平均处理的key数，7.1以下版本没有AVG_REQUEST_UNIT_READ，所以用avg_processed_keys代替
+#                        pl.active_count * sh.avg_latency * sh.avg_processed_keys as active_total_factor
+#
+#                 from processlist as pl
+#                          left join statements_history as sh on pl.instance = sh.instance and pl.digest = sh.digest)
+#
+# select instance,                                                                             -- 实例名称
+#        digest,                                                                               -- sql指纹
+#        active_count,                                                                         -- 当前活动连接数
+#        active_avg_time                                          as active_avg_time_s,        -- 预估平均每条语句执行时间（秒），从语句执行开始到当前时间*2
+#        active_total_time                                        as active_total_time_s,      -- 当前正在执行的相同SQL指纹的总耗时（秒），从语句执行开始到当前时间
+#        active_total_mem / 1024 / 1024                           as active_total_mem_mb,      -- 当前正在执行的相同SQL指纹的总内存消耗
+#        active_total_disk / 1024 / 1024                          as active_total_disk_mb,     -- 当前正在执行的相同SQL指纹的总益处到磁盘消耗
+#        -- todo 如果statement_history视图中没有该语句，那么可能对历史的分析不准确，导致找根因SQL时会有误差
+#        exec_count,                                                                           -- 该语句在statement_history内存中保留的执行次数
+#        qps,                                                                                  -- 该语句在整个库总平均每秒执行次数，计算first_seen和last_seen之间执行的次数
+#        plan_digest,                                                                          -- 执行计划的指纹信息
+#        avg_latency                                              as avg_latency_s,            -- 在statement_history中每条语句的平均执行时间，历史记录往往更真实
+#        avg_processed_keys,                                                                   -- 平均每条语句扫描过的keys数量（gc时间之内所有版本扫描，需mvcc判断）
+#        avg_total_keys,                                                                       -- 平均每条记录扫描过的keys数量（gc时间之外的已经插入墓碑标记但是未被rockdb清理的版本）
+#        avg_result_rows,                                                                      -- 平均每条语句返回的行数
+#        avg_scan_keys_per_row,                                                                -- 平均每行扫描的keys数量（包括表和索引）
+#        -- query_sample_text, -- 该语句的样例文本（带有具体值）
+#        substring(replace(query_sample_text, '\n', ' '), 1, 200) as query_sample_text_len200, -- 该语句的样例文本（带有具体值）
+#        first_seen,                                                                           -- 该语句在statement_history中的首次出现时间
+#        last_seen,                                                                            -- 该语句在statement_history中的最后一次出现时间
+#        active_total_factor,                                                                  -- 该语句的耗时因子，改值越大表示该语句越耗时
+#        active_total_factor_percent,                                                          -- 该语句的耗时因子在所有相同指纹的语句中的占比
+#        case
+#            -- 如果执行时间超过1秒，且该语句耗时因子占比超过1/count(*)，则认为是慢查询
+#            when active_total_factor_percent >= 1 / NULLIF(count(*) over (), 0) and active_avg_time >= 1 then 'yes'
+#            -- 如果没在statements_history表中找到该语句，且执行时间超过1秒，则认为是慢查询
+#            when active_total_factor_percent is null and active_avg_time >= 1 then 'yes'
+#            else 'no' end                                        as expensive_sql,            -- 是否慢查询
+#        user_access,                                                                          -- 用户分布
+#        ip_access,                                                                            -- 客户端IP分布
+#        session_id_list,                                                                      -- 相同的sql指纹对应的session_id列表
+#        id_list_kill                                                                         -- session_id列表的kill形式展现，方便复制到tidb控制台执行，结合set session group_concat_max_len = 5242880;使用，避免被截断
+#
+# from (select *,
+#              round(100 * active_total_factor / NULLIF(sum(active_total_factor) over (), 0),
+#                    2) as active_total_factor_percent
+#       from result) as t;
+
+class ActiveConnectionInfo(BaseTable):
+    def __init__(self):
+        self.instance = ""
+        self.digest = ""
+        self.active_count = 0
+        self.active_avg_time_s = 0
+        self.active_total_time_s = 0
+        self.active_total_mem_mb = 0
+        self.active_total_disk_mb = 0
+        self.exec_count = 0
+        self.qps = 0
+        self.plan_digest = ""
+        self.avg_latency_s = 0
+        self.avg_processed_keys = 0
+        self.avg_total_keys = 0
+        self.avg_result_rows = 0
+        self.avg_scan_keys_per_row = 0
+        self.query_sample_text_len200 = ""
+        self.first_seen = datetime.now()
+        self.last_seen = datetime.now()
+        self.active_total_factor = 0
+        self.active_total_factor_percent = 0
+        self.expensive_sql = ""
+        self.user_access = ""
+        self.ip_access = ""
+        self.session_id_list = ""
+        self.id_list_kill = ""
+        super().__init__()
+
+def get_active_connection_info(conn):
+    sql_text = """-- tiflash中process_keys都为0，因为不走tikv。因此这里暂未兼容走tiflash存储引擎的语句。
+with processlist as (select a.*, b.info as current_sql_text
+                     from (select instance,
+                                  digest,
+                                  GROUP_CONCAT(DISTINCT CONCAT(USER, '(', user_count, ')') SEPARATOR
+                                               ', ')                                                AS user_access,
+                                  GROUP_CONCAT(DISTINCT CONCAT(ip_address, '(', ip_count, ')') SEPARATOR
+                                               ', ')                                                AS ip_access,
+                                  -- 将id 用group_concat聚合，因为一个digest可能对应多个id
+                                  group_concat(id)                                                  as id_list,
+                                  concat(group_concat(concat('kill tidb ', id) separator ';'), ';') as id_list_kill,
+                                  count(*)                                                          as active_count,
+                                  avg(time) * 2                                                     as active_avg_time,
+                                  sum(time)                                                         as active_total_time,
+                                  sum(mem)                                                          as active_total_mem,
+                                  sum(disk)                                                         as active_total_disk
+                           from (SELECT *,
+                                        SUBSTRING_INDEX(HOST, ':', 1)                                      AS ip_address,
+                                        COUNT(*) OVER (PARTITION BY DIGEST, USER)                          AS user_count,
+                                        COUNT(*) OVER (PARTITION BY DIGEST, SUBSTRING_INDEX(HOST, ':', 1)) AS ip_count
+                                 FROM INFORMATION_SCHEMA.CLUSTER_PROCESSLIST) as subquery
+                           where command != 'Sleep'
+                             and id != connection_id()
+                           group by instance, digest) a
+                              left join (select instance,
+                                                digest,
+                                                info,
+                                                row_number() over (partition by instance,digest) as nbr
+                                         from information_schema.cluster_processlist) b -- 从该表中获取当前执行的sql文本
+                                        on a.instance = b.instance and a.digest = b.digest and b.nbr = 1),
+     statements_history as (select *
+                            from (select instance,
+                                         digest,
+                                         plan_digest,
+                                         exec_count,
+                                         exec_count / NULLIF(timestampdiff(second, first_seen, last_seen), 0)       as qps,
+                                         avg_latency / 1000000000                                                   as avg_latency,
+                                         avg_processed_keys,
+                                         avg_total_keys,
+                                         avg_result_rows,
+                                         query_sample_text,
+                                         first_seen,
+                                         last_seen,
+                                         AVG_REQUEST_UNIT_READ,
+                                         row_number() over (partition by instance,digest order by first_seen desc ) as nbr
+                                  from (select *
+                                        from information_schema.cluster_statements_summary
+                                        union all
+                                        select *
+                                        from information_schema.cluster_statements_summary_history) a) statements
+                            where nbr = 1),
+     result as (select pl.instance                                              as instance,
+                       pl.id_list                                               as session_id_list,
+                       pl.id_list_kill                                          as id_list_kill,
+                       pl.user_access,
+                       pl.ip_access,
+                       pl.digest                                                as digest,
+                       sh.plan_digest                                           as plan_digest,
+                       pl.active_count,
+                       pl.active_avg_time,
+                       pl.active_total_time,
+                       pl.active_total_mem,
+                       pl.active_total_disk,
+                       sh.exec_count,
+                       sh.qps,
+                       sh.avg_latency,
+                       sh.avg_processed_keys,
+                       sh.avg_total_keys,
+                       sh.avg_result_rows,
+                       sh.avg_processed_keys / NULLIF(sh.avg_result_rows, 0)    as avg_scan_keys_per_row,
+                       coalesce(pl.current_sql_text, sh.query_sample_text)      as query_sample_text,
+                       sh.first_seen,
+                       sh.last_seen,
+                       sh.AVG_REQUEST_UNIT_READ,
+                       -- 对于7.1以后版本可以用AVG_REQUEST_UNIT_READ来计算factor
+                       -- pl.active_count * sh.AVG_REQUEST_UNIT_READ          as active_total_factor
+                       -- 计算该语句的耗时因子，即执行次数*平均耗时*平均处理的key数，7.1以下版本没有AVG_REQUEST_UNIT_READ，所以用avg_processed_keys代替
+                       pl.active_count * sh.avg_latency * sh.avg_processed_keys as active_total_factor
+
+                from processlist as pl
+                         left join statements_history as sh on pl.instance = sh.instance and pl.digest = sh.digest)
+
+select instance,                                                                             -- 实例名称
+       digest,                                                                               -- sql指纹
+       active_count,                                                                         -- 当前活动连接数
+       active_avg_time                                          as active_avg_time_s,        -- 预估平均每条语句执行时间（秒），从语句执行开始到当前时间*2
+       active_total_time                                        as active_total_time_s,      -- 当前正在执行的相同SQL指纹的总耗时（秒），从语句执行开始到当前时间
+       active_total_mem / 1024 / 1024                           as active_total_mem_mb,      -- 当前正在执行的相同SQL指纹的总内存消耗
+       active_total_disk / 1024 / 1024                          as active_total_disk_mb,     -- 当前正在执行的相同SQL指纹的总益处到磁盘消耗
+       -- todo 如果statement_history视图中没有该语句，那么可能对历史的分析不准确，导致找根因SQL时会有误差
+       exec_count,                                                                           -- 该语句在statement_history内存中保留的执行次数
+       qps,                                                                                  -- 该语句在整个库总平均每秒执行次数，计算first_seen和last_seen之间执行的次数
+       plan_digest,                                                                          -- 执行计划的指纹信息
+       avg_latency                                              as avg_latency_s,            -- 在statement_history中每条语句的平均执行时间，历史记录往往更真实
+       avg_processed_keys,                                                                   -- 平均每条语句扫描过的keys数量（gc时间之内所有版本扫描，需mvcc判断）
+       avg_total_keys,                                                                       -- 平均每条记录扫描过的keys数量（gc时间之外的已经插入墓碑标记但是未被rockdb清理的版本）
+       avg_result_rows,                                                                      -- 平均每条语句返回的行数
+       avg_scan_keys_per_row,                                                                -- 平均每行扫描的keys数量（包括表和索引）
+       -- query_sample_text, -- 该语句的样例文本（带有具体值）
+       substring(replace(query_sample_text, '\n', ' '), 1, 200) as query_sample_text_len200, -- 该语句的样例文本（带有具体值）
+       first_seen,                                                                           -- 该语句在statement_history中的首次出现时间
+       last_seen,                                                                            -- 该语句在statement_history中的最后一次出现时间
+       active_total_factor,                                                                  -- 该语句的耗时因子，改值越大表示该语句越耗时
+       active_total_factor_percent,                                                          -- 该语句的耗时因子在所有相同指纹的语句中的占比
+       case
+           -- 如果执行时间超过1秒，且该语句耗时因子占比超过1/count(*)，则认为是慢查询
+           when active_total_factor_percent >= 1 / NULLIF(count(*) over (), 0) and active_avg_time >= 1 then 'yes'
+           -- 如果没在statements_history表中找到该语句，且执行时间超过1秒，则认为是慢查询
+           when active_total_factor_percent is null and active_avg_time >= 1 then 'yes'
+           else 'no' end                                        as expensive_sql,            -- 是否慢查询
+       user_access,                                                                          -- 用户分布
+       ip_access,                                                                            -- 客户端IP分布
+       session_id_list,                                                                      -- 相同的sql指纹对应的session_id列表
+       id_list_kill                                                                         -- session_id列表的kill形式展现，方便复制到tidb控制台执行，结合set session group_concat_max_len = 5242880;使用，避免被截断
+
+from (select *,
+             round(100 * active_total_factor / NULLIF(sum(active_total_factor) over (), 0),
+                   2) as active_total_factor_percent
+      from result) as t"""
+    active_connection_infos: List[ActiveConnectionInfo] = []
+    cursor = conn.cursor()
+    cursor.execute("set session group_concat_max_len = 5242880;")
+    cursor.execute(sql_text)
+    for row in cursor:
+        active_connection_info = ActiveConnectionInfo()
+        active_connection_info.instance = row[0]
+        active_connection_info.digest = row[1]
+        active_connection_info.active_count = row[2]
+        active_connection_info.active_avg_time_s = row[3]
+        active_connection_info.active_total_time_s = row[4]
+        active_connection_info.active_total_mem_mb = row[5]
+        active_connection_info.active_total_disk_mb = row[6]
+        active_connection_info.exec_count = row[7]
+        active_connection_info.qps = row[8]
+        active_connection_info.plan_digest = row[9]
+        active_connection_info.avg_latency_s = row[10]
+        active_connection_info.avg_processed_keys = row[11]
+        active_connection_info.avg_total_keys = row[12]
+        active_connection_info.avg_result_rows = row[13]
+        active_connection_info.avg_scan_keys_per_row = row[14]
+        active_connection_info.query_sample_text_len200 = row[15]
+        active_connection_info.first_seen = row[16]
+        active_connection_info.last_seen = row[17]
+        active_connection_info.active_total_factor = row[18]
+        active_connection_info.active_total_factor_percent = row[19]
+        active_connection_info.expensive_sql = row[20]
+        active_connection_info.user_access = row[21]
+        active_connection_info.ip_access = row[22]
+        active_connection_info.session_id_list = row[23]
+        active_connection_info.id_list_kill = row[24]
+        active_connection_infos.append(active_connection_info)
+    cursor.close()
+    return active_connection_infos
+
+# CPU使用率
+# select b.time, a.hostname, a.ip, a.types, b.cpu_used_percent
+# from (select group_concat(type)                as types,
+#              substring_index(instance, ':', 1) as ip,
+#              value                             as hostname
+#       from INFORMATION_SCHEMA.cluster_systeminfo
+#       where name = 'kernel.hostname'
+#       group by ip,
+#                hostname) a,
+#      (select time,
+#              substring_index(instance, ':', 1) as ip,
+#              round((100 - value), 2)           as cpu_used_percent
+#       from METRICS_SCHEMA.node_cpu_usage
+#       where mode = 'idle'
+#         and time = now()) b
+# where a.ip = b.ip;
+class CpuUsage(BaseTable):
+    def __init__(self):
+        self.time = datetime.now()
+        self.hostname = ""
+        self.ip = ""
+        self.types = ""
+        self.cpu_used_percent = 0.0
+        super().__init__()
+
+def get_cpu_usage(conn):
+    sql_text = """select b.time, a.hostname, a.ip, a.types, b.cpu_used_percent
+from (select group_concat(type)                as types,
+             substring_index(instance, ':', 1) as ip,
+             value                             as hostname
+      from INFORMATION_SCHEMA.cluster_systeminfo
+      where name = 'kernel.hostname'
+      group by ip,
+               hostname) a,
+     (select time,
+             substring_index(instance, ':', 1) as ip,
+             round((100 - value), 2)           as cpu_used_percent
+      from METRICS_SCHEMA.node_cpu_usage
+      where mode = 'idle'
+        and time = now()) b
+where a.ip = b.ip;"""
+    cpu_usages: List[CpuUsage] = []
+    cursor = conn.cursor()
+    cursor.execute(sql_text)
+    for row in cursor:
+        cpu_usage = CpuUsage()
+        cpu_usage.time = row[0]
+        cpu_usage.hostname = row[1]
+        cpu_usage.ip = row[2]
+        cpu_usage.types = row[3]
+        cpu_usage.cpu_used_percent = row[4]
+        cpu_usages.append(cpu_usage)
+    cursor.close()
+    return cpu_usages
+
+# 查看IO响应时间，查看最近1个小时之内的情况
+# with node_hostname_map as (select group_concat(type)                as types,
+#                                   substring_index(instance, ':', 1) as ip,
+#                                   value                             as hostname
+#                            from INFORMATION_SCHEMA.cluster_systeminfo
+#                            where name = 'kernel.hostname'
+#                            group by ip, hostname),
+#      device_disk_info as (select substring_index(instance, ':', 1) as ip,
+#                                  device_name,
+#                                  value
+#                           from INFORMATION_SCHEMA.CLUSTER_HARDWARE
+#                           where DEVICE_TYPE = 'disk'
+#                             and name = 'path'
+#                           group by ip, device_name, value),
+#      device_mapping_info as (select a.ip,
+#                                     a.device_name as dm_device,
+#                                     a.value       as mount_point,
+#                                     b.device_name as mapper_device
+#                              from device_disk_info a
+#                                       join device_disk_info b
+#                                            on a.ip = b.ip and a.VALUE = b.VALUE and a.DEVICE_NAME like 'dm-%'
+#                                                and b.DEVICE_NAME like '/dev/mapper/%'
+#                              order by a.ip),
+#      aggregated_iops as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+#                                 instance,
+#                                 device,
+#                                 max(value)                          as value
+#                          from METRICS_SCHEMA.node_disk_iops
+#                          where time between now() - interval 60 minute and now()
+#                          group by time_group, instance, device),
+#      aggregated_data_with_host as (select a.time_group,
+#                                           a.instance,
+#                                           h.hostname,
+#                                           h.types as types_on_host,
+#                                           a.device,
+#                                           a.value
+#                                    from aggregated_iops a
+#                                             left join node_hostname_map h on substring_index(a.instance, ':', 1) = h.ip),
+#      aggregated_latency as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+#                                    instance,
+#                                    device,
+#                                    max(value)                          as value
+#                             from METRICS_SCHEMA.node_disk_read_latency
+#                             where time between now() - interval 60 minute and now()
+#                             group by time_group, instance, device),
+#      aggregated_write_latency as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+#                                          instance,
+#                                          device,
+#                                          max(value)                          as value
+#                                   from METRICS_SCHEMA.node_disk_write_latency
+#                                   where time between now() - interval 60 minute and now()
+#                                   group by time_group, instance, device),
+#      aggregated_io_util as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+#                                    instance,
+#                                    device,
+#                                    max(value)                          as value
+#                             from METRICS_SCHEMA.node_disk_io_util
+#                             where time between now() - interval 60 minute and now()
+#                             group by time_group, instance, device),
+#      aggregated_read_bytes as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+#                                       instance,
+#                                       device,
+#                                       max(value)                          as value
+#                                from METRICS_SCHEMA.tikv_disk_read_bytes
+#                                where time between now() - interval 60 minute and now()
+#                                group by time_group, instance, device),
+#      aggregated_write_bytes as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+#                                        instance,
+#                                        device,
+#                                        max(value)                          as value
+#                                 from METRICS_SCHEMA.tikv_disk_write_bytes
+#                                 where time between now() - interval 60 minute and now()
+#                                 group by time_group, instance, device),
+#      aggregated_cpu_usage as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+#                                      instance,
+#                                      max(value)                          as value,
+#                                      mode
+#                               from METRICS_SCHEMA.node_cpu_usage
+#                               where time between now() - interval 60 minute and now()
+#                               group by time_group, instance, mode)
+#
+# select /*+ MAX_EXECUTION_TIME(10000) MEMORY_QUOTA(1024 MB) */
+#     a.time_group                                              as time,
+#     a.instance,
+#     a.hostname,
+#     a.types_on_host,
+#     a.device,
+#     b.mapper_device,
+#     b.mount_point,
+#     round(a.value, 2)                                         as iops,
+#     round(c.value, 2)                                         as io_util,
+#     round((d.value + e.value) / 1024 / nullif(a.value, 0), 0) as io_size_kb,
+#     round(f.value * 1000, 2)                                  as read_latency_ms,
+#     round(g.value * 1000, 2)                                  as write_latency_ms,
+#     round(d.value / 1024 / 1024, 2)                           as disk_read_bytes_mb,
+#     round(e.value / 1024 / 1024, 2)                           as disk_write_bytes_mb,
+#     round((100 - h.value) / 100, 2)                           as cpu_used
+# from aggregated_data_with_host a
+#          left join device_mapping_info b on substring_index(a.instance, ':', 1) = b.ip and a.device = b.dm_device
+#          left join aggregated_io_util c
+#                    on a.time_group = c.time_group and a.instance = c.instance and a.device = c.device
+#          left join aggregated_read_bytes d
+#                    on a.time_group = d.time_group and a.instance = d.instance and a.device = d.device
+#          left join aggregated_write_bytes e
+#                    on a.time_group = e.time_group and a.instance = e.instance and a.device = e.device
+#          left join aggregated_latency f
+#                    on a.time_group = f.time_group and a.instance = f.instance and a.device = f.device
+#          left join aggregated_write_latency g
+#                    on a.time_group = g.time_group and a.instance = g.instance and a.device = g.device
+#          left join aggregated_cpu_usage h on a.instance = h.instance and a.time_group = h.time_group
+# where h.mode = 'idle'
+#   and a.device like 'dm-%'
+#   and b.mount_point like '/%'
+# order by a.instance, b.mount_point, a.time_group desc;
+
+class IoResponseTime(BaseTable):
+    def __init__(self):
+        self.time = datetime.now()
+        self.instance = ""
+        self.hostname = ""
+        self.types_on_host = ""
+        self.device = ""
+        self.mapper_device = ""
+        self.mount_point = ""
+        self.iops = 0.0
+        self.io_util = 0.0
+        self.io_size_kb = 0.0
+        self.read_latency_ms = 0.0
+        self.write_latency_ms = 0.0
+        self.disk_read_bytes_mb = 0.0
+        self.disk_write_bytes_mb = 0.0
+        self.cpu_used = 0.0
+        super().__init__()
+
+def get_io_response_time(conn):
+    sql_text = """with node_hostname_map as (select group_concat(type)                as types,
+                                  substring_index(instance, ':', 1) as ip,
+                                  value                             as hostname
+                           from INFORMATION_SCHEMA.cluster_systeminfo
+                           where name = 'kernel.hostname'
+                           group by ip, hostname),
+     device_disk_info as (select substring_index(instance, ':', 1) as ip,
+                                 device_name,
+                                 value
+                          from INFORMATION_SCHEMA.CLUSTER_HARDWARE
+                          where DEVICE_TYPE = 'disk'
+                            and name = 'path'
+                          group by ip, device_name, value),
+     device_mapping_info as (select a.ip,
+                                    a.device_name as dm_device,
+                                    a.value       as mount_point,
+                                    b.device_name as mapper_device
+                             from device_disk_info a
+                                      join device_disk_info b
+                                           on a.ip = b.ip and a.VALUE = b.VALUE and a.DEVICE_NAME like 'dm-%'
+                                               and b.DEVICE_NAME like '/dev/mapper/%'
+                             order by a.ip),
+     aggregated_iops as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+                                instance,
+                                device,
+                                max(value)                          as value
+                         from METRICS_SCHEMA.node_disk_iops
+                         where time between now() - interval 60 minute and now()
+                         group by time_group, instance, device),
+     aggregated_data_with_host as (select a.time_group,
+                                          a.instance,
+                                          h.hostname,
+                                          h.types as types_on_host,
+                                          a.device,
+                                          a.value
+                                   from aggregated_iops a
+                                            left join node_hostname_map h on substring_index(a.instance, ':', 1) = h.ip),
+     aggregated_latency as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+                                   instance,
+                                   device,
+                                   max(value)                          as value
+                            from METRICS_SCHEMA.node_disk_read_latency
+                            where time between now() - interval 60 minute and now()
+                            group by time_group, instance, device),
+     aggregated_write_latency as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+                                         instance,
+                                         device,
+                                         max(value)                          as value
+                                  from METRICS_SCHEMA.node_disk_write_latency
+                                  where time between now() - interval 60 minute and now()
+                                  group by time_group, instance, device),
+     aggregated_io_util as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+                                   instance,
+                                   device,
+                                   max(value)                          as value
+                            from METRICS_SCHEMA.node_disk_io_util
+                            where time between now() - interval 60 minute and now()
+                            group by time_group, instance, device),
+     aggregated_read_bytes as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+                                      instance,
+                                      device,
+                                      max(value)                          as value
+                               from METRICS_SCHEMA.tikv_disk_read_bytes
+                               where time between now() - interval 60 minute and now()
+                               group by time_group, instance, device),
+     aggregated_write_bytes as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+                                       instance,
+                                       device,
+                                       max(value)                          as value
+                                from METRICS_SCHEMA.tikv_disk_write_bytes
+                                where time between now() - interval 60 minute and now()
+                                group by time_group, instance, device),
+     aggregated_cpu_usage as (select date_format(time, '%Y-%m-%d %H:%i') as time_group,
+                                     instance,
+                                     max(value)                          as value,
+                                     mode
+                              from METRICS_SCHEMA.node_cpu_usage
+                              where time between now() - interval 60 minute and now()
+                              group by time_group, instance, mode)
+
+select /*+ MAX_EXECUTION_TIME(10000) MEMORY_QUOTA(1024 MB) */
+    a.time_group                                              as time,
+    a.instance,
+    a.hostname,
+    a.types_on_host,
+    a.device,
+    b.mapper_device,
+    b.mount_point,
+    round(a.value, 2)                                         as iops,
+    round(c.value, 2)                                         as io_util,
+    round((d.value + e.value) / 1024 / nullif(a.value, 0), 0) as io_size_kb,
+    round(f.value * 1000, 2)                                  as read_latency_ms,
+    round(g.value * 1000, 2)                                  as write_latency_ms,
+    round(d.value / 1024 / 1024, 2)                           as disk_read_bytes_mb,
+    round(e.value / 1024 / 1024, 2)                           as disk_write_bytes_mb,
+    round((100 - h.value) / 100, 2)                           as cpu_used
+from aggregated_data_with_host a
+         left join device_mapping_info b on substring_index(a.instance, ':', 1) = b.ip and a.device = b.dm_device
+         left join aggregated_io_util c
+                   on a.time_group = c.time_group and a.instance = c.instance and a.device = c.device
+         left join aggregated_read_bytes d
+                   on a.time_group = d.time_group and a.instance = d.instance and a.device = d.device
+         left join aggregated_write_bytes e
+                   on a.time_group = e.time_group and a.instance = e.instance and a.device = e.device
+         left join aggregated_latency f
+                   on a.time_group = f.time_group and a.instance = f.instance and a.device = f.device
+         left join aggregated_write_latency g
+                   on a.time_group = g.time_group and a.instance = g.instance and a.device = g.device
+         left join aggregated_cpu_usage h on a.instance = h.instance and a.time_group = h.time_group
+where h.mode = 'idle'
+  and a.device like 'dm-%'
+  and b.mount_point like '/%'
+order by a.instance, b.mount_point, a.time_group desc;"""
+    io_response_times: List[IoResponseTime] = []
+    cursor = conn.cursor()
+    cursor.execute(sql_text)
+    for row in cursor:
+        io_response_time = IoResponseTime()
+        io_response_time.time = row[0]
+        io_response_time.instance = row[1]
+        io_response_time.hostname = row[2]
+        io_response_time.types_on_host = row[3]
+        io_response_time.device = row[4]
+        io_response_time.mapper_device = row[5]
+        io_response_time.mount_point = row[6]
+        io_response_time.iops = row[7]
+        io_response_time.io_util = row[8]
+        io_response_time.io_size_kb = row[9]
+        io_response_time.read_latency_ms = row[10]
+        io_response_time.write_latency_ms = row[11]
+        io_response_time.disk_read_bytes_mb = row[12]
+        io_response_time.disk_write_bytes_mb = row[13]
+        io_response_time.cpu_used = row[14]
+        io_response_times.append(io_response_time)
+    cursor.close()
+    return io_response_times
+# 查看数据库最近1小时的QPS情况
+# select time,
+#        round(sum(value), 2) as qps
+# from METRICS_SCHEMA.tidb_qps
+# where type in ('StmtSendLongData', 'Query', 'StmtExecute', 'StmtPrepare', 'StmtFetch')
+#   and time between now() - interval 60 minute and now()
+# group by time
+# order by time;
+class Qps(BaseTable):
+    def __init__(self):
+        self.time = datetime.now()
+        self.qps = 0.0
+        super().__init__()
+
+def get_qps(conn):
+    sql_text = """select time,
+       round(sum(value), 2) as qps
+from METRICS_SCHEMA.tidb_qps
+where type in ('StmtSendLongData', 'Query', 'StmtExecute', 'StmtPrepare', 'StmtFetch')
+  and time between now() - interval 60 minute and now()
+group by time
+order by time;"""
+    qps: List[Qps] = []
+    cursor = conn.cursor()
+    cursor.execute(sql_text)
+    for row in cursor:
+        qps_info = Qps()
+        qps_info.time = row[0]
+        qps_info.qps = row[1]
+        qps.append(qps_info)
+    cursor.close()
+    return qps
+
+# 查看语句的平均响应时间
+# select instance, time, round(1000 * avg(value), 2) as avg_response_time_ms
+# from METRICS_SCHEMA.tidb_query_duration
+# where quantile = 0.5
+#   and time between now() - interval 60 minute and now()
+# group by time, instance
+# order by instance, time;
+class AvgResponseTime(BaseTable):
+    def __init__(self):
+        self.instance = ""
+        self.time = datetime.now()
+        self.avg_response_time_ms = 0.0
+        super().__init__()
+
+def get_avg_response_time(conn):
+    sql_text = """select instance, time, round(1000 * avg(value), 2) as avg_response_time_ms
+from METRICS_SCHEMA.tidb_query_duration
+where quantile = 0.5
+  and time between now() - interval 60 minute and now()
+group by time, instance
+order by instance, time;"""
+    avg_response_times: List[AvgResponseTime] = []
+    cursor = conn.cursor()
+    cursor.execute(sql_text)
+    for row in cursor:
+        avg_response_time = AvgResponseTime()
+        avg_response_time.instance = row[0]
+        avg_response_time.time = row[1]
+        avg_response_time.avg_response_time_ms = row[2]
+        avg_response_times.append(avg_response_time)
+    cursor.close()
+    return avg_response_times
+
+# 查看连接数使用率情况
+# select type,
+#        hostname,
+#        report_instance as instance,
+#        conns           as connection_count,
+#        max_conns       as configured_max_counnection_count,
+#        conn_ratio      as connection_ratio
+# from (select b.type,
+#              b.hostname,
+#              a.instance                                                                 as report_instance,
+#              b.instance,
+#              a.conns,
+#              c.max_conns,
+#              case when c.max_conns <= 0 then 0 else round(a.conns / c.max_conns, 2) end as conn_ratio
+#       from (select instance, cast(value as signed) as conns
+#             from METRICS_SCHEMA.tidb_connection_count
+#             where time = NOW()) a
+#                left join(select a.type,
+#                                 a.instance,
+#                                 a.value                                                   as hostname,
+#                                 concat(substring_index(a.instance, ':', 1), ':', b.value) as new_instance
+#                          from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO a,
+#                               INFORMATION_SCHEMA.CLUSTER_CONFIG b
+#                          where a.type = 'tidb'
+#                            and a.SYSTEM_TYPE = 'system'
+#                            and a.SYSTEM_NAME = 'sysctl'
+#                            and a.name = 'kernel.hostname'
+#                            and a.instance = b.INSTANCE
+#                            and b.`key` = 'status.status-port') b on a.instance = b.new_instance
+#                left join (select row_number() over (partition by instance) as nbr,
+#                                  instance,
+#                                  cast(value as signed)                     as max_conns
+#                           from INFORMATION_SCHEMA.CLUSTER_CONFIG
+#                           where `key` in ('max-server-connections', 'instance.max_connections')) c
+#                          on b.INSTANCE = c.INSTANCE and c.nbr = 1) a;
+class ConnectionUsage(BaseTable):
+    def __init__(self):
+        self.type = ""
+        self.hostname = ""
+        self.instance = ""
+        self.connection_count = 0
+        self.configured_max_counnection_count = 0
+        self.connection_ratio = 0.0
+        super().__init__()
+
+def get_connection_usage(conn):
+    sql_text = """select type,
+       hostname,
+       report_instance as instance,
+       conns           as connection_count,
+       max_conns       as configured_max_counnection_count,
+       conn_ratio      as connection_ratio
+from (select b.type,
+             b.hostname,
+             a.instance                                                                 as report_instance,
+             b.instance,
+             a.conns,
+             c.max_conns,
+             case when c.max_conns <= 0 then 0 else round(a.conns / c.max_conns, 2) end as conn_ratio
+      from (select instance, cast(value as signed) as conns
+            from METRICS_SCHEMA.tidb_connection_count
+            where time = NOW()) a
+               left join(select a.type,
+                                a.instance,
+                                a.value                                                   as hostname,
+                                concat(substring_index(a.instance, ':', 1), ':', b.value) as new_instance
+                         from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO a,
+                              INFORMATION_SCHEMA.CLUSTER_CONFIG b
+                         where a.type = 'tidb'
+                           and a.SYSTEM_TYPE = 'system'
+                           and a.SYSTEM_NAME = 'sysctl'
+                           and a.name = 'kernel.hostname'
+                           and a.instance = b.INSTANCE
+                           and b.`key` = 'status.status-port') b on a.instance = b.new_instance
+               left join (select row_number() over (partition by instance) as nbr,
+                                 instance,
+                                 cast(value as signed)                     as max_conns
+                          from INFORMATION_SCHEMA.CLUSTER_CONFIG
+                          where `key` in ('max-server-connections', 'instance.max_connections')) c
+                         on b.INSTANCE = c.INSTANCE and c.nbr = 1) a;"""
+    connection_usages: List[ConnectionUsage] = []
+    cursor = conn.cursor()
+    cursor.execute(sql_text)
+    for row in cursor:
+        connection_usage = ConnectionUsage()
+        connection_usage.type = row[0]
+        connection_usage.hostname = row[1]
+        connection_usage.instance = row[2]
+        connection_usage.connection_count = row[3]
+        connection_usage.configured_max_counnection_count = row[4]
+        connection_usage.connection_ratio = row[5]
+        connection_usages.append(connection_usage)
+    cursor.close()
+    return connection_usages
+
+
 
 if __name__ == "__main__":
     # 打印日志到终端，打印行号，日期等

@@ -11,8 +11,21 @@ import yaml
 from pkg.dbinfo import *
 from datetime import datetime, timedelta
 from pkg.report import report as report_html
+from dbutils.pooled_db import PooledDB
+from concurrent.futures import ThreadPoolExecutor
 
 functions_to_save = [
+    get_connection_info,
+    get_active_session_count,
+    get_lock_chain,
+    get_lock_source_change,
+    get_active_connection_info,
+    get_metadata_lock_wait,
+    get_node_info,
+    get_os_info,
+    get_disk_info,
+    get_table_info,
+    get_memory_detail,
     get_variables,
     get_column_collations,
     get_user_privileges,
@@ -20,12 +33,6 @@ functions_to_save = [
     get_slow_query_info,
     get_statement_history,
     get_duplicate_indexes,
-    get_node_info,
-    get_os_info,
-    get_disk_info,
-    get_table_info,
-    get_memory_detail,
-    get_connection_info,
 ]
 
 
@@ -95,7 +102,7 @@ def parse_since(since):
         return timedelta(minutes=int(since[:-1]))
 
 
-def collect(args):
+def collect_old(args):
     """
     从TiDB集群中获取信息并储存到sqlite3中
     :param args: 命令行参数
@@ -115,16 +122,47 @@ def collect(args):
     if ip and ip != "127.0.0.1":
         if not args.cluster:
             args.cluster = "default"
-        conn = pymysql.connect(host=ip, port=port, user=user, password=password, charset="utf8mb4",
-                               database="information_schema", connect_timeout=10)
+        # Create a connection pool
+        pool = PooledDB(
+            creator=pymysql,
+            maxconnections=10,  # Maximum number of connections in the pool
+            mincached=2,  # Minimum number of idle connections in the pool
+            maxcached=5,  # Maximum number of idle connections in the pool
+            blocking=True,  # If True, block and wait for a connection to be available
+            host=ip,
+            port=port,
+            user=user,
+            password=password,
+            database='information_schema',
+            charset='utf8mb4',
+            init_command="set session max_execution_time=30000"
+        )
+        conn = pool.connection()
         # init_command = "set session max_execution_time=30000; set tidb_executor_concurrency=2; set tidb_distsql_scan_concurrency=5; set tidb_multi_statement_mode='ON'"
         out_conn = sqlite3.connect(f"{args.output_dir}/{args.cluster}.sqlite3")
         out_conn.text_factory = str
-        for func in functions_to_save:
-            if func == get_slow_query_info:
-                SaveData(out_conn, func, conn, datetime.now() - timedelta(days=10), datetime.now())
-            else:
-                SaveData(out_conn, func, conn)
+        with ThreadPoolExecutor() as executor:
+            futures = []
+            new_conns = []
+            for func in functions_to_save:
+                if func == get_slow_query_info:
+                    futures.append(executor.submit(SaveData, out_conn, func, conn, datetime.now() - timedelta(days=10),
+                                                   datetime.now()))
+                elif func == get_lock_source_change:
+                    # 需要新开启一个连接来并行执行
+                    conn2 = pool.connection()
+                    new_conns.append(conn2)
+                    futures.append(executor.submit(SaveData, out_conn, func, conn2))
+                else:
+                    SaveData(out_conn, func, conn)
+
+            for future in futures:
+                future.result()
+                try:
+                    for conn in new_conns:
+                        conn.close()
+                except:
+                    pass
         conn.close()
         out_conn.close()
         if args.with_report:
@@ -137,19 +175,47 @@ def collect(args):
         for cluster_info in cluster_infos:
             logging.info(f"开始获取{cluster_info.cluster_name}信息，ip:{cluster_info.ip},port:{cluster_info.port}")
             try:
-                conn = pymysql.connect(host=cluster_info.ip, port=cluster_info.port, user=user, password=password,
-                                       charset="utf8mb4",
-                                       database="information_schema", connect_timeout=10,
-                                       init_command="set session max_execution_time=30000")
+                # Create a connection pool
+                pool = PooledDB(
+                    creator=pymysql,
+                    maxconnections=10,  # Maximum number of connections in the pool
+                    mincached=2,  # Minimum number of idle connections in the pool
+                    maxcached=5,  # Maximum number of idle connections in the pool
+                    blocking=True,  # If True, block and wait for a connection to be available
+                    host=cluster_info.ip,
+                    port=cluster_info.port,
+                    user=user,
+                    password=password,
+                    database='information_schema',
+                    charset='utf8mb4',
+                    init_command="set session max_execution_time=30000"
+                )
+                conn = pool.connection()
                 out_conn = sqlite3.connect(f"{args.output_dir}/{cluster_info.cluster_name}.sqlite3")
                 out_conn.text_factory = str
-                SaveData(out_conn, get_variables, conn)
-                SaveData(out_conn, get_column_collations, conn)
-                SaveData(out_conn, get_user_privileges, conn)
-                SaveData(out_conn, get_node_versions, conn)
-                SaveData(out_conn, get_slow_query_info, conn, slowquery_start_time, slowquery_end_time)
-                SaveData(out_conn, get_statement_history, conn)
-                SaveData(out_conn, get_duplicate_indexes, conn)
+                with ThreadPoolExecutor() as executor:
+                    futures = []
+                    new_conns = []
+                    for func in functions_to_save:
+                        if func == get_slow_query_info:
+                            futures.append(
+                                executor.submit(SaveData, out_conn, func, conn, datetime.now() - timedelta(days=10),
+                                                datetime.now()))
+                        elif func == get_lock_source_change:
+                            # 需要新开启一个连接来并行执行
+                            conn2 = pool.connection()
+                            new_conns.append(conn2)
+                            futures.append(executor.submit(SaveData, out_conn, func, conn2))
+                        else:
+                            SaveData(out_conn, func, conn)
+
+                    for future in futures:
+                        future.result()
+                        try:
+                            for conn in new_conns:
+                                conn.close()
+                        except:
+                            pass
                 conn.close()
                 out_conn.close()
                 if args.with_report:
@@ -159,6 +225,89 @@ def collect(args):
             except Exception as e:
                 logging.error(f"获取{cluster_info.cluster_name}信息失败:{e}")
                 continue
+
+def collect(args):
+    """
+    从TiDB集群中获取信息并储存到sqlite3中
+    :param args: 命令行参数
+    :type args: argparse.Namespace
+    """
+    def create_connection_pool(host, port, user, password):
+        return PooledDB(
+            creator=pymysql,
+            maxconnections=10,
+            mincached=2,
+            maxcached=5,
+            blocking=True,
+            host=host,
+            port=port,
+            user=user,
+            password=password,
+            database='information_schema',
+            charset='utf8mb4',
+            init_command="set session max_execution_time=30000"
+        )
+
+    def execute_tasks(out_conn, pool, functions_to_save):
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            futures = []
+            new_conns = []
+            for func in functions_to_save:
+                if func == get_slow_query_info:
+                    conn2 = pool.connection()
+                    new_conns.append(conn2)
+                    futures.append(executor.submit(SaveData, out_conn, func, conn2, datetime.now() - timedelta(days=10),
+                                                   datetime.now()))
+                elif func == get_lock_source_change:
+                    conn2 = pool.connection()
+                    new_conns.append(conn2)
+                    futures.append(executor.submit(SaveData, out_conn, func, conn2))
+                else:
+                    # 其它场景串型处理
+                    conn = pool.connection()
+                    SaveData(out_conn, func, conn)
+                    conn.close()
+            for future in futures:
+                future.result()
+            for conn in new_conns:
+                conn.close()
+
+    def process_cluster(cluster_name, ip, port, user, password):
+        logging.info(f"开始获取{cluster_name}信息，ip:{ip}, port:{port}")
+        try:
+            pool = create_connection_pool(ip, port, user, password)
+            # conn = pool.connection()
+            # todo 先设置check_same_thread=False允许并行写入，后续考虑SQLiteConnectionManager替代
+            out_conn = sqlite3.connect(f"{args.output_dir}/{cluster_name}.sqlite3",check_same_thread=False)
+            out_conn.text_factory = str
+
+            execute_tasks(out_conn, pool, functions_to_save)
+
+            # conn.close()
+            out_conn.close()
+
+            if args.with_report:
+                logging.info(f"开始生成{cluster_name}报表")
+                report_html(f"{args.output_dir}/{cluster_name}.sqlite3", f"{args.output_dir}/{cluster_name}.html")
+        except Exception as e:
+            logging.error(f"获取{cluster_name}信息失败: {e}")
+
+    user = args.user
+    ip = args.host
+    port = args.port
+    password = args.password or getpass.getpass("请输入密码:")
+
+    Path(args.output_dir).mkdir(exist_ok=True)
+    logging.info(f"输出目录: {args.output_dir}")
+
+    if ip and ip != "127.0.0.1":
+        args.cluster = args.cluster or "default"
+        process_cluster(args.cluster, ip, port, user, password)
+    else:
+        for cluster_info in get_cluster_infos():
+            if not args.cluster or cluster_info.cluster_name in args.cluster.split(","):
+                process_cluster(cluster_info.cluster_name, cluster_info.ip, cluster_info.port, user, password)
+
 
 
 def report(args):
