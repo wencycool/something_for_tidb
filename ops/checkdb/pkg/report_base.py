@@ -211,95 +211,42 @@ def generate_html_chart(chart_id, column_names, rows, title="", dimension_level=
             "axisLabel": {"rotate": 30}
         },
         "yAxis": {"type": "value"},
-        "dataZoom": [{"type": "slider", "start": 0, "end": 100}, {"type": "inside"}],
+        "dataZoom": [{"type": "slider", "start": 0, "end": 100}, {"type": "inside","disabled": True}],
         "series": series_data
     }
 
+    # Ensure the option is properly serialized for use in JavaScript
+    option_json = json.dumps(option)
+
     html_template = f"""
         <style>
-            /* 弹出框样式 */
-            .popup {{
-                display: none;
-                position: fixed;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                z-index: 1000;
-                background: #fff;
-                border: 1px solid #ccc;
-                border-radius: 8px;
-                box-shadow: 0px 0px 20px rgba(0, 0, 0, 0.2);
-                width: 90vw;
-                height: 80vh;
-            }}
-            .popup.active {{
-                display: block;
-            }}
-            .popup-overlay {{
-                display: none;
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: rgba(0, 0, 0, 0.5);
-                z-index: 999;
-            }}
-            .popup-overlay.active {{
-                display: block;
-            }}
+            /* 禁止鼠标滚轮缩放图表 */
             #chart-container {{
                 position: relative;
             }}
-            .close-button {{
-                position: absolute;
-                top: 10px;
-                right: 10px;
-                z-index: 10;
-                cursor: pointer;
-                background: #ff4d4d;
-                border: none;
-                border-radius: 50%;
-                color: white;
-                width: 30px;
-                height: 30px;
-                font-size: 16px;
+            #chart-container .echarts {{
+                pointer-events: none;
+            }}
+            /* 禁止图表滚轮缩放 */
+            #chart-container .echarts {{
+                touch-action: none; /* 禁止触摸缩放 */
+                -ms-touch-action: none; /* 禁止MS触摸缩放 */
             }}
         </style>
         <div id="chart-container">
-            <button onclick="openPopup('{chart_id}')" 
-                    style="position: absolute; right: 10px; top: 20px; z-index: 10;">放大</button>
             <div id="{chart_id}" style="width: 100%; height: 400px; margin: 0 auto; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);"></div>
         </div>
-        <div class="popup-overlay" id="overlay-{chart_id}" onclick="closePopup('{chart_id}')"></div>
-        <div class="popup" id="popup-{chart_id}">
-            <button class="close-button" onclick="closePopup('{chart_id}')">×</button>
-            <div id="popup-chart-{chart_id}" style="width: 100%; height: 100%;"></div>
-        </div>
         <script>
+            // 初始化图表
             var chartDom = document.getElementById('{chart_id}');
             var myChart = echarts.init(chartDom);
-            var option = {json.dumps(option)};
+            var option = {option_json};
             myChart.setOption(option);
             window.addEventListener('resize', function() {{
                 myChart.resize();
             }});
-
-            // 弹出式图表逻辑
-            function openPopup(chartId) {{
-                document.getElementById('popup-' + chartId).classList.add('active');
-                document.getElementById('overlay-' + chartId).classList.add('active');
-                var popupChartDom = document.getElementById('popup-chart-' + chartId);
-                var popupChart = echarts.init(popupChartDom);
-                popupChart.setOption(option);
-            }}
-
-            function closePopup(chartId) {{
-                document.getElementById('popup-' + chartId).classList.remove('active');
-                document.getElementById('overlay-' + chartId).classList.remove('active');
-            }}
         </script>
-        """
+    """
     return html_template
 
 
