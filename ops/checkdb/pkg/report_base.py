@@ -249,6 +249,153 @@ def generate_html_chart(chart_id, column_names, rows, title="", dimension_level=
     """
     return html_template
 
+def generate_html_chart_with_instance_and_mount(chart_id, column_names, rows, title=""):
+    import json
+    from collections import defaultdict
+
+    # 提取字段
+    time_col = column_names[0]
+    instance_col = column_names[1]
+    mount_col = column_names[2]
+    metric_names = column_names[3:]
+
+    # 按 instance 和 mount_point 分组
+    grouped_data = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    for row in rows:
+        time = row[0]
+        instance = row[1]
+        mount = row[2]
+        for i, metric in enumerate(metric_names):
+            grouped_data[instance][mount][metric].append({"time": time, "value": row[3 + i]})
+
+    # 提取唯一的 instance 和 mount_point
+    instances = sorted(grouped_data.keys())
+    mounts_by_instance = {instance: sorted(grouped_data[instance].keys()) for instance in instances}
+
+    # 默认展示第一个 instance 和 mount_point 的数据
+    default_instance = instances[0]
+    default_mount = mounts_by_instance[default_instance][0]
+
+    # 生成默认图表数据
+    def generate_series_data(instance, mount):
+        color_palette = ['#5470C6', '#91CC75', '#EE6666', '#73C0DE', '#3BA272', '#FC8452']
+        series_data = []
+        color_index = 0
+        for metric, values in grouped_data[instance][mount].items():
+            series_data.append({
+                "name": metric,
+                "type": "line",
+                "data": [v["value"] for v in values],
+                "smooth": True,
+                "lineStyle": {"width": 2},
+                "itemStyle": {"color": color_palette[color_index % len(color_palette)]}
+            })
+            color_index += 1
+        return series_data
+
+    x_axis = sorted(set(row[0] for row in rows))
+    option = {
+        "title": {"text": title, "left": "center"},
+        "tooltip": {"trigger": "axis"},
+        "legend": {"top": "10%"},
+        "grid": {"left": "5%", "right": "5%", "bottom": "10%", "containLabel": True},
+        "toolbox": {
+            "feature": {
+                "saveAsImage": {},
+                "restore": {},
+                "dataZoom": {"yAxisIndex": "none"},
+                "magicType": {"type": ["line", "bar"]},
+            }
+        },
+        "xAxis": {
+            "type": "category",
+            "data": x_axis,
+            "axisLabel": {"rotate": 30}
+        },
+        "yAxis": {"type": "value"},
+        "dataZoom": [{"type": "slider", "start": 0, "end": 100}, {"type": "inside", "disabled": True}],
+        "series": generate_series_data(default_instance, default_mount)
+    }
+
+    option_json = json.dumps(option)
+    grouped_data_json = json.dumps(grouped_data)
+    mounts_by_instance_json = json.dumps(mounts_by_instance)
+
+    html_template = f"""
+        <div id="chart-container" style="position: relative;">
+            <!-- Instance 下拉框 -->
+            <div style="position: absolute; top: 10px; left: 10px; z-index: 1000;">
+                <label for="instance-selector">Instance:</label>
+                <select id="instance-selector" style="width: 150px;">
+                    {"".join(f'<option value="{instance}">{instance}</option>' for instance in instances)}
+                </select>
+            </div>
+            <!-- Mount Point 下拉框 -->
+            <div style="position: absolute; top: 10px; left: 300px; z-index: 1000;">
+                <label for="mount-selector">Mount Point:</label>
+                <select id="mount-selector" style="width: 150px;">
+                    {"".join(f'<option value="{mount}">{mount}</option>' for mount in mounts_by_instance[default_instance])}
+                </select>
+            </div>
+            <div id="{chart_id}" style="width: 100%; height: 400px; margin: 0 auto; border: 1px solid #ccc; border-radius: 8px; box-shadow: 0px 0px 10px rgba(0, 0, 0, 0.1);"></div>
+        </div>
+        <script>
+            var chartDom = document.getElementById('{chart_id}');
+            var myChart = echarts.init(chartDom);
+            var option = {option_json};
+
+            var groupedData = {grouped_data_json};
+            var mountsByInstance = {mounts_by_instance_json};
+
+            function updateMountSelector(instance) {{
+                var mountSelector = document.getElementById('mount-selector');
+                mountSelector.innerHTML = mountsByInstance[instance].map(function(mount) {{
+                    return `<option value="${{mount}}">${{mount}}</option>`;
+                }}).join('');
+            }}
+
+            function updateChart(instance, mount) {{
+                var newSeries = [];
+                if (groupedData[instance] && groupedData[instance][mount]) {{
+                    Object.keys(groupedData[instance][mount]).forEach(function(metric) {{
+                        var values = groupedData[instance][mount][metric].map(function(item) {{
+                            return item.value;
+                        }});
+                        newSeries.push({{
+                            name: metric,
+                            type: "line",
+                            data: values,
+                            smooth: true
+                        }});
+                    }});
+                }}
+                option.series = newSeries;
+                myChart.setOption(option, true);
+            }}
+
+            document.getElementById('instance-selector').addEventListener('change', function(event) {{
+                var selectedInstance = event.target.value;
+                updateMountSelector(selectedInstance);
+                var firstMount = mountsByInstance[selectedInstance][0];
+                updateChart(selectedInstance, firstMount);
+            }});
+
+            document.getElementById('mount-selector').addEventListener('change', function(event) {{
+                var selectedInstance = document.getElementById('instance-selector').value;
+                var selectedMount = event.target.value;
+                updateChart(selectedInstance, selectedMount);
+            }});
+
+            window.addEventListener('resize', function() {{
+                myChart.resize();
+            }});
+
+            // 初始化图表
+            myChart.setOption(option);
+        </script>
+    """
+    return html_template
+
 
 def header(local=True):
     """

@@ -1,6 +1,6 @@
 
 import sqlite3
-from .report_base import header, footer, generate_html_table, generate_html_chart
+from .report_base import header, footer, generate_html_table, generate_html_chart,generate_html_chart_with_instance_and_mount
 
 def fetch_data(conn, query):
     cursor = conn.cursor()
@@ -243,7 +243,7 @@ def report(in_file, out_file):
         if query_list[0] == "chart":
             # column_names第一列为时间，后面的列为数据
             if title == "磁盘IO响应时间":
-                html_content += generate_html_chart(table_id, column_names, rows, title, 2)
+                html_content += generate_html_chart_with_instance_and_mount(table_id, column_names, rows, title)
             elif title == "数据库平均响应时间":
                 html_content += generate_html_chart(table_id, column_names, rows, title, 1)
             else:
