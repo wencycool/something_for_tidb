@@ -277,10 +277,13 @@ def collect(args):
         )
 
     def execute_tasks(out_conn, pool, functions_to_save):
-        with ThreadPoolExecutor(max_workers=1) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             futures = []
             new_conns = []
-            for func in functions_to_save:
+            # 记录总的需要打印的函数个数和已经打印的函数个数
+            logging.info(f"一共有{len(functions_to_save)}个任务需要执行")
+            for i,func in enumerate(functions_to_save):
+                logging.info(f"开始执行{func.__name__},剩余任务数:{len(functions_to_save)-i-1}，剩余异步执行任务数:{len(futures)}")
                 if func == get_slow_query_info:
                     conn2 = pool.connection()
                     new_conns.append(conn2)
@@ -315,10 +318,8 @@ def collect(args):
             # 初始化数据表，为了让活动连接数，锁等待的汇总数据和明细数据对齐，会采用明细数据做汇总的方式计算汇总数据
             init_sqlite3_db(out_conn)
             execute_tasks(out_conn, pool, functions_to_save)
-
             # conn.close()
             out_conn.close()
-
             if args.with_report:
                 logging.info(f"开始生成{cluster_name}报表")
                 report_html(f"{args.output_dir}/{cluster_name}.sqlite3", f"{args.output_dir}/{cluster_name}.html")
