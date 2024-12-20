@@ -1616,7 +1616,7 @@ ORDER BY source_session_id;"""
 #                                          query_sample_text,
 #                                          first_seen,
 #                                          last_seen,
-#                                          AVG_REQUEST_UNIT_READ,
+#                                          -- AVG_REQUEST_UNIT_READ,
 #                                          row_number() over (partition by instance,digest order by first_seen desc ) as nbr
 #                                   from (select *
 #                                         from information_schema.cluster_statements_summary
@@ -1767,7 +1767,7 @@ with processlist as (select a.*, b.info as current_sql_text
                                          query_sample_text,
                                          first_seen,
                                          last_seen,
-                                         AVG_REQUEST_UNIT_READ,
+                                         -- -- AVG_REQUEST_UNIT_READ,
                                          row_number() over (partition by instance,digest order by first_seen desc ) as nbr
                                   from (select *
                                         from information_schema.cluster_statements_summary
@@ -1797,7 +1797,7 @@ with processlist as (select a.*, b.info as current_sql_text
                        coalesce(pl.current_sql_text, sh.query_sample_text)      as query_sample_text,
                        sh.first_seen,
                        sh.last_seen,
-                       sh.AVG_REQUEST_UNIT_READ,
+                       -- sh.AVG_REQUEST_UNIT_READ,
                        -- 对于7.1以后版本可以用AVG_REQUEST_UNIT_READ来计算factor
                        -- pl.active_count * sh.AVG_REQUEST_UNIT_READ          as active_total_factor
                        -- 计算该语句的耗时因子，即执行次数*平均耗时*平均处理的key数，7.1以下版本没有AVG_REQUEST_UNIT_READ，所以用avg_processed_keys代替
