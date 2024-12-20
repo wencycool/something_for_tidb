@@ -19,7 +19,7 @@
       <excludeFolder url="file://$MODULE_DIR$/ops/checkdb/.env" />
       <excludeFolder url="file://$MODULE_DIR$/.env" />
     </content>
-    <orderEntry type="jdk" jdkName="Python 3.7 (pythonProject)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Python 3.13 (something_for_tidb)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
     <orderEntry type="library" name="Python 3.7 (something_for_tidb) interpreter library" level="application" />
   </component>
