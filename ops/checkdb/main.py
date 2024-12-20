@@ -30,13 +30,14 @@ functions_to_save = [
     get_disk_info,
     get_table_info,
     get_memory_detail,
+    get_statement_history,
+    get_slow_query_info,
 ]
 """
     get_variables,
     get_column_collations,
     get_user_privileges,
     get_node_versions,
-    get_slow_query_info,
     get_statement_history,
     get_duplicate_indexes,
     """
@@ -173,7 +174,7 @@ def collect_old(args):
             new_conns = []
             for func in functions_to_save:
                 if func == get_slow_query_info:
-                    futures.append(executor.submit(SaveData, out_conn, func, conn, datetime.now() - timedelta(days=10),
+                    futures.append(executor.submit(SaveData, out_conn, func, conn, datetime.now() - timedelta(hours=1),
                                                    datetime.now()))
                 elif func == get_lock_source_change:
                     # 需要新开启一个连接来并行执行

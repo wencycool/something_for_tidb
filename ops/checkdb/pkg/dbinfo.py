@@ -286,8 +286,8 @@ class SlowQuery(BaseTable):
         self.avg_total_keys = 0
         self.sum_process_keys = 0
         self.avg_process_keys = 0
-        self.min_time = ""
-        self.max_time = ""
+        self.first_seen = ""
+        self.last_seen = ""
         self.mem_max = 0
         self.disk_max = 0
         self.avg_result_rows = 0
@@ -358,7 +358,8 @@ def get_slow_query_info(conn, start_time=None, end_time=None):
     GROUP BY s.Digest ,s.Plan_digest
     ORDER BY sum(s.Query_time) desc
     LIMIT 35)
-    SELECT ss.Digest,         -- SQL Digest
+    SELECT /*+ MAX_EXECUTION_TIME(30000) MEMORY_QUOTA(2048 MB) */
+    ss.Digest,         -- SQL Digest
     ss.Plan_digest,           -- PLAN Digest
     (SELECT s1.Query FROM information_schema.cluster_slow_query s1 WHERE s1.Digest=ss.digest AND s1.time>=ss.min_time AND s1.time<=ss.max_time LIMIT 1) query,  -- SQL文本
     (SELECT s2.plan FROM information_schema.cluster_slow_query s2 WHERE s2.Plan_digest=ss.plan_digest AND s2.time>=ss.min_time AND s2.time<=ss.max_time LIMIT 1) plan, -- 执行计划
@@ -380,7 +381,11 @@ def get_slow_query_info(conn, start_time=None, end_time=None):
     FROM ss;
     """
     cursor = conn.cursor(pymysql.cursors.DictCursor)
-    cursor.execute(slow_query_sql)
+    try:
+        cursor.execute(slow_query_sql)
+    except Exception as e:
+        logging.error(f"Get slow query failed: {e}, {traceback.format_exc()}")
+        return slow_queries
     for row in cursor:
         slow_query = SlowQuery()
         slow_query.digest = row["Digest"]
@@ -395,8 +400,8 @@ def get_slow_query_info(conn, start_time=None, end_time=None):
         slow_query.avg_total_keys = row["avg_total_keys"]
         slow_query.sum_process_keys = row["sum_process_keys"]
         slow_query.avg_process_keys = row["avg_process_keys"]
-        slow_query.min_time = row["min_time"]
-        slow_query.max_time = row["max_time"]
+        slow_query.first_seen = row["min_time"]
+        slow_query.last_seen = row["max_time"]
         slow_query.mem_max = row["Mem_max"]
         slow_query.disk_max = row["Disk_max"]
         slow_query.avg_result_rows = row["avg_Result_rows"]
@@ -457,11 +462,15 @@ def get_statement_history(conn, min_latency=50):
                        where AVG_LATENCY/1000000 >= {min_latency}) a -- 超过50ms的SQL
                  where a.nbr <= 30) -- 取每个批次的前30条SQL
 
-    select EXEC_COUNT,STMT_TYPE,round(AVG_LATENCY/1000000000,3) as AVG_LATENCY,INSTANCE,SUMMARY_BEGIN_TIME,SUMMARY_END_TIME,FIRST_SEEN,LAST_SEEN,DIGEST,PLAN_DIGEST,round(SUM_LATENCY/1000000000,3) as SUM_LATENCY,AVG_MEM,AVG_DISK,AVG_RESULT_ROWS,AVG_AFFECTED_ROWS,AVG_PROCESSED_KEYS,AVG_TOTAL_KEYS,AVG_ROCKSDB_DELETE_SKIPPED_COUNT,AVG_ROCKSDB_KEY_SKIPPED_COUNT,AVG_ROCKSDB_BLOCK_READ_COUNT,SCHEMA_NAME,TABLE_NAMES,INDEX_NAMES,DIGEST_TEXT,QUERY_SAMPLE_TEXT,PREV_SAMPLE_TEXT,PLAN
+    select /*+ MAX_EXECUTION_TIME(10000) MEMORY_QUOTA(1024 MB) */ EXEC_COUNT,STMT_TYPE,round(AVG_LATENCY/1000000000,3) as AVG_LATENCY,INSTANCE,SUMMARY_BEGIN_TIME,SUMMARY_END_TIME,FIRST_SEEN,LAST_SEEN,DIGEST,PLAN_DIGEST,round(SUM_LATENCY/1000000000,3) as SUM_LATENCY,AVG_MEM,AVG_DISK,AVG_RESULT_ROWS,AVG_AFFECTED_ROWS,AVG_PROCESSED_KEYS,AVG_TOTAL_KEYS,AVG_ROCKSDB_DELETE_SKIPPED_COUNT,AVG_ROCKSDB_KEY_SKIPPED_COUNT,AVG_ROCKSDB_BLOCK_READ_COUNT,SCHEMA_NAME,TABLE_NAMES,INDEX_NAMES,DIGEST_TEXT,QUERY_SAMPLE_TEXT,PREV_SAMPLE_TEXT,PLAN
     from top_sql limit 100000 -- 控制最多返回10万条
     """
     cursor = conn.cursor(pymysql.cursors.DictCursor)
-    cursor.execute(statement_history_sql)
+    try:
+        cursor.execute(statement_history_sql)
+    except Exception as e:
+        logging.error(f"Get statement history failed: {e}, {traceback.format_exc()}")
+        return statement_histories
     for row in cursor:
         statement_history = StatementHistory()
         statement_history.exec_count = row["EXEC_COUNT"]
@@ -1058,7 +1067,7 @@ def get_active_session_count(conn):
     active_session_counts: List[ActiveSessionCount] = []
     cursor = conn.cursor()
     cursor.execute("""
-    select
+    select /*+ MAX_EXECUTION_TIME(10000) MEMORY_QUOTA(1024 MB) */
         count(*) as total_active_sessions,
         coalesce(sum(case when ctt.STATE = "LockWaiting" then 1 else 0 end),0) as lock_waiting_sessions,
         (select count(distinct session_id) from mysql.tidb_mdl_view tmv) as metadata_lock_waiting_sessions
@@ -1103,10 +1112,9 @@ def get_metadata_lock_wait(conn):
     :type conn: pymysql.connections.Connection
     :rtype: List[MetadataLockWait]
     """
-    metadata_lock_waits: List[MetadataLockWait] = []
-    cursor = conn.cursor()
-    cursor.execute("""
-    select tmv.job_id                                        as ddl_job,
+    sql_text = """
+    select /*+ MAX_EXECUTION_TIME(10000) MEMORY_QUOTA(1024 MB) */
+           tmv.job_id                                        as ddl_job,
            concat('admin cancel ddl jobs ', tmv.job_id, ';') as cancel_ddl_job,
            tmv.db_name                                          ddl_job_dbname,
            tmv.table_name                                       ddl_job_tablename,
@@ -1114,7 +1122,14 @@ def get_metadata_lock_wait(conn):
            tmv.session_id                                    as waitter_session_id,
            sql_digests                                       as waitter_sqls
     from mysql.tidb_mdl_view tmv;
-    """)
+    """
+    metadata_lock_waits: List[MetadataLockWait] = []
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql_text)
+    except Exception as e:
+        logging.error(f"Execute sql failed: {e}, {traceback.format_exc()}")
+        return metadata_lock_waits
     for row in cursor:
         metadata_lock_wait = MetadataLockWait()
         metadata_lock_wait.ddl_job = row[0]
