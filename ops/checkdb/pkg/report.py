@@ -31,12 +31,12 @@ def report_queries():
     ]
     queries["磁盘使用率"] = [
         "table",
-        "select hostname,ip_address,types_count,fstype,mountpoint,used_percent * 100,aval_size_gb,total_size_gb from tidb_diskinfo where mountpoint like '/tidb%' or mountpoint in ('/','/home')",
+        "select hostname,ip_address,types_count,fstype,mountpoint,used_percent * 100 as used_percent,aval_size_gb,total_size_gb from tidb_diskinfo where mountpoint like '/tidb%' or mountpoint in ('/','/home')",
         "查询每个节点的磁盘使用率，包括磁盘挂载点、磁盘使用率、磁盘大小，只显示挂载点为/tidb开头和根目录的磁盘"
     ]
     queries["连接数分布情况"] = [
         "table",
-        "SELECT type,hostname,instance,connection_count,configured_max_counnection_count,connection_ratio * 100 FROM tidb_connectioninfo",
+        "SELECT type,hostname,instance,connection_count,configured_max_counnection_count,connection_ratio * 100 as connection_ratio FROM tidb_connectioninfo",
         "各tidb节点连接数分布情况"
     ]
     queries["活动连接数汇总"] = [
@@ -167,7 +167,7 @@ select substr(digest,1,16) as short_digest,
        prev_sample_text,
        plan
 from tidb_statementhistory order by exec_count desc;""",
-        "查询tidb的历史sql语句，包括sql语句和执行时间，选择大于50ms且执行次数top30的语句，avg_latency为平均执行时间（秒）。假设某种 SQL 每分钟都出现，那 statements_summary_history ���会保存这种 SQL 最近 12 个小时的数据。但如果某种 SQL 只在每天 00:00 ~ 00:30 出现，则 statements_summary_history 中会保存这种 SQL 24 个时间段的数据，每个时间段的间隔都是 1 天，所以会有这种 SQL 最近 24 天的数据。"
+        "查询tidb的历史sql语句，包括sql语句和执行时间，选择大于50ms且执行次数top30的语句，avg_latency为平均执行时间（秒）。假设某种 SQL 每分钟都出现，那statements_summary_history 会保存这种 SQL 最近 12 个小时的数据。但如果某种 SQL 只在每天 00:00 ~ 00:30 出现，则 statements_summary_history 中会保存这种 SQL 24 个时间段的数据，每个时间段的间隔都是 1 天，所以会有这种 SQL 最近 24 天的数据。"
     ]
     queries["最近慢查询语句"] = [
         "table",

@@ -997,7 +997,6 @@ class ConnectionInfo(BaseTable):
         self.hostname = ""
         self.instance = ""
         self.connection_count = 0
-        self.active_connection_count = 0
         self.configured_max_counnection_count = 0
         self.connection_ratio = 0.0
         super().__init__()
@@ -1009,35 +1008,55 @@ def get_connection_info(conn):
     :type conn: pymysql.connections.Connection
     :rtype: List[ConnectionInfo]
     """
+    sql_text = """select type,
+       hostname,
+       report_instance as instance,
+       conns           as connection_count,
+       max_conns       as configured_max_counnection_count,
+       conn_ratio      as connection_ratio
+from (select b.type,
+             b.hostname,
+             a.instance                                                                 as report_instance,
+             b.instance,
+             a.conns,
+             c.max_conns,
+             case when c.max_conns <= 0 then 0 else round(a.conns / c.max_conns, 2) end as conn_ratio
+      from (select instance, cast(value as signed) as conns
+            from METRICS_SCHEMA.tidb_connection_count
+            where time = NOW()) a
+               left join(select a.type,
+                                a.instance,
+                                a.value                                                   as hostname,
+                                concat(substring_index(a.instance, ':', 1), ':', b.value) as new_instance
+                         from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO a,
+                              INFORMATION_SCHEMA.CLUSTER_CONFIG b
+                         where a.type = 'tidb'
+                           and a.SYSTEM_TYPE = 'system'
+                           and a.SYSTEM_NAME = 'sysctl'
+                           and a.name = 'kernel.hostname'
+                           and a.instance = b.INSTANCE
+                           and b.`key` = 'status.status-port') b on a.instance = b.new_instance
+               left join (select row_number() over (partition by instance) as nbr,
+                                 instance,
+                                 cast(value as signed)                     as max_conns
+                          from INFORMATION_SCHEMA.CLUSTER_CONFIG
+                          where `key` in ('max-server-connections', 'instance.max_connections')) c
+                         on b.INSTANCE = c.INSTANCE and c.nbr = 1) a;"""
     connection_infos: List[ConnectionInfo] = []
     cursor = conn.cursor()
-    cursor.execute("""
-    select b.type, b.hostname, a.instance, a.connection_count,a.active_connection_count
-    from (select instance,
-                 count(*) as connection_count,
-                 sum(case when COMMAND !='Sleep' then 1 else 0 end) as active_connection_count
-          from INFORMATION_SCHEMA.CLUSTER_PROCESSLIST
-          group by instance) a
-             left join(select a.type,
-                              a.INSTANCE,
-                              a.value                                                   as hostname,
-                              concat(substring_index(a.INSTANCE, ':', 1), ':', b.value) as new_instance
-                       from INFORMATION_SCHEMA.CLUSTER_SYSTEMINFO a,
-                            INFORMATION_SCHEMA.CLUSTER_CONFIG b
-                       where a.type = 'tidb'
-                         and a.SYSTEM_TYPE = 'system'
-                         and a.SYSTEM_NAME = 'sysctl'
-                         and a.name = 'kernel.hostname'
-                         and a.INSTANCE = b.INSTANCE
-                         and b.`key` = 'status.status-port') b on a.INSTANCE = b.new_instance;
-    """)
+    try:
+        cursor.execute(sql_text)
+    except Exception as e:
+        logging.error(f"Execute sql failed: {e}, {traceback.format_exc()}")
+        return connection_infos
     for row in cursor:
         connection_info = ConnectionInfo()
         connection_info.type = row[0]
         connection_info.hostname = row[1]
         connection_info.instance = row[2]
         connection_info.connection_count = row[3]
-        connection_info.active_connection_count = row[4]
+        connection_info.configured_max_counnection_count = row[4]
+        connection_info.connection_ratio = row[5]
         connection_infos.append(connection_info)
     cursor.close()
     return connection_infos
