@@ -439,7 +439,7 @@ def header(local=True):
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Interactive Table</title>
+        <title>TiDB Report</title>
         <style>
         .custom-font {
             font-family: 'Courier New', monospace; /* 设置字体 */

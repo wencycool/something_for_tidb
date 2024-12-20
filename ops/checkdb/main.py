@@ -19,8 +19,8 @@ functions_to_save = [
     # get_active_session_count,
     get_lock_chain,
     get_lock_source_change,
-    get_active_connection_info,
     get_metadata_lock_wait,
+    get_active_connection_info,
     get_qps,
     get_avg_response_time,
     get_io_response_time,
@@ -128,130 +128,6 @@ def parse_since(since):
         return timedelta(minutes=int(since[:-1]))
 
 
-def collect_old(args):
-    """
-    从TiDB集群中获取信息并储存到sqlite3中
-    :param args: 命令行参数
-    :type args: argparse.Namespace
-    """
-    user = args.user
-    ip = args.host
-    port = args.port
-    password = args.password
-    slowquery_start_time = datetime.now() - parse_since(args.since)
-    slowquery_end_time = datetime.now()
-    if not password:
-        password = getpass.getpass("请输入密码:")
-    if args.output_dir == "output":
-        Path("output").mkdir(exist_ok=True)
-    logging.info(f"输出目录:{args.output_dir}")
-    if ip and ip != "127.0.0.1":
-        if not args.cluster:
-            args.cluster = "default"
-        # Create a connection pool
-        pool = PooledDB(
-            creator=pymysql,
-            maxconnections=10,  # Maximum number of connections in the pool
-            mincached=2,  # Minimum number of idle connections in the pool
-            maxcached=5,  # Maximum number of idle connections in the pool
-            blocking=True,  # If True, block and wait for a connection to be available
-            host=ip,
-            port=port,
-            user=user,
-            password=password,
-            database='information_schema',
-            charset='utf8mb4',
-            init_command="set session max_execution_time=30000"
-        )
-        conn = pool.connection()
-        # init_command = "set session max_execution_time=30000; set tidb_executor_concurrency=2; set tidb_distsql_scan_concurrency=5; set tidb_multi_statement_mode='ON'"
-        out_conn = sqlite3.connect(f"{args.output_dir}/{args.cluster}.sqlite3")
-        out_conn.text_factory = str
-        with ThreadPoolExecutor() as executor:
-            futures = []
-            new_conns = []
-            for func in functions_to_save:
-                if func == get_slow_query_info:
-                    futures.append(executor.submit(SaveData, out_conn, func, conn, datetime.now() - timedelta(hours=1),
-                                                   datetime.now()))
-                elif func == get_lock_source_change:
-                    # 需要新开启一个连接来并行执行
-                    conn2 = pool.connection()
-                    new_conns.append(conn2)
-                    futures.append(executor.submit(SaveData, out_conn, func, conn2))
-                else:
-                    SaveData(out_conn, func, conn)
-
-            for future in futures:
-                future.result()
-                try:
-                    for conn in new_conns:
-                        conn.close()
-                except:
-                    pass
-        conn.close()
-        out_conn.close()
-        if args.with_report:
-            logging.info(f"开始生成{args.cluster}报表")
-            report_html(f"{args.output_dir}/{args.cluster}.sqlite3", f"{args.output_dir}/{args.cluster}.html")
-    else:
-        cluster_infos = get_cluster_infos()
-        if args.cluster and args.cluster != "default":
-            cluster_infos = [cluster for cluster in cluster_infos if cluster.cluster_name in args.cluster.split(",")]
-        for cluster_info in cluster_infos:
-            logging.info(f"开始获取{cluster_info.cluster_name}信息，ip:{cluster_info.ip},port:{cluster_info.port}")
-            try:
-                # Create a connection pool
-                pool = PooledDB(
-                    creator=pymysql,
-                    maxconnections=10,  # Maximum number of connections in the pool
-                    mincached=2,  # Minimum number of idle connections in the pool
-                    maxcached=5,  # Maximum number of idle connections in the pool
-                    blocking=True,  # If True, block and wait for a connection to be available
-                    host=cluster_info.ip,
-                    port=cluster_info.port,
-                    user=user,
-                    password=password,
-                    database='information_schema',
-                    charset='utf8mb4',
-                    init_command="set session max_execution_time=30000"
-                )
-                conn = pool.connection()
-                out_conn = sqlite3.connect(f"{args.output_dir}/{cluster_info.cluster_name}.sqlite3")
-                out_conn.text_factory = str
-                with ThreadPoolExecutor() as executor:
-                    futures = []
-                    new_conns = []
-                    for func in functions_to_save:
-                        if func == get_slow_query_info:
-                            futures.append(
-                                executor.submit(SaveData, out_conn, func, conn, datetime.now() - timedelta(days=10),
-                                                datetime.now()))
-                        elif func == get_lock_source_change:
-                            # 需要新开启一个连接来并行执行
-                            conn2 = pool.connection()
-                            new_conns.append(conn2)
-                            futures.append(executor.submit(SaveData, out_conn, func, conn2))
-                        else:
-                            SaveData(out_conn, func, conn)
-
-                    for future in futures:
-                        future.result()
-                        try:
-                            for conn in new_conns:
-                                conn.close()
-                        except:
-                            pass
-                conn.close()
-                out_conn.close()
-                if args.with_report:
-                    logging.info(f"开始生成{args.cluster}报表")
-                    report_html(f"{args.output_dir}/{cluster_info.cluster_name}.sqlite3",
-                                f"{args.output_dir}/{cluster_info.cluster_name}.html")
-            except Exception as e:
-                logging.error(f"获取{cluster_info.cluster_name}信息失败:{e}")
-                continue
-
 def collect(args):
     """
     从TiDB集群中获取信息并储存到sqlite3中
@@ -287,7 +163,7 @@ def collect(args):
                     new_conns.append(conn2)
                     futures.append(executor.submit(SaveData, out_conn, func, conn2, datetime.now() - timedelta(days=10),
                                                    datetime.now()))
-                elif func == get_lock_source_change:
+                elif func in [get_lock_source_change,get_metadata_lock_wait]:
                     conn2 = pool.connection()
                     new_conns.append(conn2)
                     futures.append(executor.submit(SaveData, out_conn, func, conn2))
@@ -296,8 +172,12 @@ def collect(args):
                     conn = pool.connection()
                     SaveData(out_conn, func, conn)
                     conn.close()
-            for future in futures:
-                future.result()
+            for i,future in enumerate(futures):
+                try:
+                    future.result()
+                except Exception as e:
+                    logging.error(f"任务执行时出错: {e}")
+                logging.info(f"剩余异步执行任务数:{len(futures)-i-1}")
             for conn in new_conns:
                 conn.close()
 
