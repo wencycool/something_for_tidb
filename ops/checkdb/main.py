@@ -62,8 +62,6 @@ def init_sqlite3_db(conn):
     for table_name, sql in table.items():
         conn.execute(sql)
 
-
-
 def set_logger(log_level):
     """
     设置日志级别
