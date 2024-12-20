@@ -36,7 +36,7 @@ def report_queries():
     ]
     queries["连接数分布情况"] = [
         "table",
-        "SELECT type,hostname,instance,connection_count,configured_max_counnection_count,connection_ratio * 100 as connection_ratio FROM tidb_connectioninfo",
+        "SELECT type,hostname,instance,connection_count,configured_max_counnection_count,connection_ratio * 100 as connection_percent FROM tidb_connectioninfo",
         "各tidb节点连接数分布情况"
     ]
     queries["活动连接数汇总"] = [
@@ -56,6 +56,7 @@ def report_queries():
        active_avg_time_s as avg_time_s,
        active_total_time_s as total_time_s,
        expensive_sql,
+       active_total_factor_percent as factor_percent,
        avg_total_keys,
        avg_processed_keys,
        avg_result_rows,
@@ -71,14 +72,13 @@ def report_queries():
        first_seen,
        last_seen,
        active_total_factor,
-       active_total_factor_percent,
        query_sample_text_len200,
        query_sample_text,
        session_id_list,
        id_list_kill
 from tidb_activeconnectioninfo;
         """,
-        "查询每个节点的活动连接数"
+        "查询每个节点的活动连接数，expensive_sql表示该语句被评估为重度资源消耗语句，factor_percent表示当前语句在所有语句中影响因子占比，越高说明越耗资源"
     ]
     queries["锁等待详情"] = [
         "table",
