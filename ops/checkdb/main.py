@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 functions_to_save = [
     get_connection_info,
-    get_active_session_count,
+    # get_active_session_count,
     get_lock_chain,
     get_lock_source_change,
     get_active_connection_info,
