@@ -1270,7 +1270,7 @@ def get_lock_chain(conn):
     cursor.execute("""
     WITH RECURSIVE lock_chain AS (
         -- 初始查询：获取锁等待链，并为锁源头设置级别为 0
-        SELECT dlw.trx_id                 AS waiting_trx_id,
+        SELECT distinct dlw.trx_id                 AS waiting_trx_id,
                dlw.current_holding_trx_id AS holding_trx_id,
                0                          AS level
         FROM information_schema.data_lock_waits dlw
