@@ -45,7 +45,7 @@ def report_queries():
        (select count(*) from tidb_lockchain) as lock_waiting_sessions,
        (select count(*) from tidb_metadatalockwait) as ddl_waiting_sessions
        from tidb_activeconnectioninfo;""",
-        "总活动连接数信息，包括正在执行语句和锁等待的连接数，这里的ddl_waiting_sessions指示DDL等待其它事务提交情况（在tidb v6.5以及以后版本中DDL不会阻塞其它事务提交）"
+        "总活动连接数信息，包括正在执行语句和锁等待的连接数，这里的ddl_waiting_sessions指示DDL等待其它事务提交情况（在tidb v6.5以及以后版本中DDL不会阻塞其它事务提交。注意：因活动连接数和锁等待不是同一个语句获取的，因此可能存在锁等待数大于活动连接数情况。"
     ]
     queries["活动连接数详情"] = [
         "table",
