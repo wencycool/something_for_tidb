@@ -191,7 +191,7 @@ class UserPrivilege(BaseTable):
     def __init__(self):
         self.user = ""
         self.host = ""
-        self.privilege: [str] = []  # 按照权限名称排序
+        self.privilege: List[str] = []  # 按照权限名称排序
         super().__init__()
 
 
