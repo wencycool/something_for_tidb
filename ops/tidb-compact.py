@@ -4,7 +4,7 @@
 # from get_table_size import TiDBCluster, command_run
 # import argparse, sys
 # import logging as log
-
+# just for test
 # ******************复用get_table_size代码***********************
 # 这里避免调用直接放到当前文件中
 import argparse
