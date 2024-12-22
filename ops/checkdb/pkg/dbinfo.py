@@ -1120,8 +1120,9 @@ class MetadataLockWait(BaseTable):
         self.ddl_job_dbname = ""
         self.ddl_job_tablename = ""
         self.ddl_sql = ""
-        self.waitter_session_id = 0
-        self.waitter_sqls = ""
+        self.holding_session_id = 0
+        self.kill_holding_session_cmd = ""
+        self.holding_sqls = ""
         super().__init__()
 
 def get_metadata_lock_wait(conn):
@@ -1138,8 +1139,9 @@ def get_metadata_lock_wait(conn):
            tmv.db_name                                          ddl_job_dbname,
            tmv.table_name                                       ddl_job_tablename,
            tmv.query                                            ddl_sql,
-           tmv.session_id                                    as waitter_session_id,
-           sql_digests                                       as waitter_sqls
+           tmv.session_id                                    as holding_session_id,
+           concat('kill tidb ', tmv.session_id, ';')           as kill_holding_session_cmd,
+           sql_digests                                       as holding_sqls
     from mysql.tidb_mdl_view tmv;
     """
     metadata_lock_waits: List[MetadataLockWait] = []
@@ -1156,8 +1158,9 @@ def get_metadata_lock_wait(conn):
         metadata_lock_wait.ddl_job_dbname = row[2]
         metadata_lock_wait.ddl_job_tablename = row[3]
         metadata_lock_wait.ddl_sql = row[4]
-        metadata_lock_wait.waitter_session_id = row[5]
-        metadata_lock_wait.waitter_sqls = row[6]
+        metadata_lock_wait.holding_session_id = row[5]
+        metadata_lock_wait.kill_holding_session_cmd = row[6]
+        metadata_lock_wait.holding_sqls = row[7]
         metadata_lock_waits.append(metadata_lock_wait)
     cursor.close()
     return metadata_lock_waits
