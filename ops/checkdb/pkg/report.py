@@ -118,7 +118,7 @@ from tidb_locksourcechange""",
     queries["元数据锁"] = [
         "table",
         """select * from tidb_metadatalockwait""",
-        "查询元数据锁等待详情"
+        "查询元数据锁等待详情，当存在元数据锁等待时，并不影响业务，只是DDL会等待DML提交"
     ]
     queries["集群QPS"] = [
         "chart",
