@@ -116,7 +116,6 @@ def get_tableindexes(connect):
     :rtype: List[TableIndex]
     """
     # 按照column_name分组聚合并按照seq_in_index升序组成字段列表，然后按照table_schema,table_name,len(column_names)升序，这样一来同一个表上的索引字段个数最少的排在前面，向下匹配来判断冗余索引即可
-    global table_index
     get_index_sql = """select table_schema,table_name,key_name,group_concat(column_name order by seq_in_index 
     separator ',') as column_names from information_schema.tidb_indexes  where table_schema not in ('mysql',
     'INFORMATION_SCHEMA','PERFORMANCE_SCHEMA') group by table_schema,table_name,key_name order by table_schema,

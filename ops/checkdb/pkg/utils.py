@@ -8,8 +8,12 @@ def set_max_memory(max_memory=4 * 1024 * 1024 * 1024):
     :type max_memory: int
     """
     try:
-        import resource
-        resource.setrlimit(resource.RLIMIT_AS, (max_memory, max_memory))
+        import resource, sys
+        if sys.platform == 'darwin':  # macOS
+            # On macOS, RLIMIT_AS doesn't work, use RLIMIT_RSS instead
+            resource.setrlimit(resource.RLIMIT_RSS, (max_memory, max_memory))
+        else:  # Linux and others
+            resource.setrlimit(resource.RLIMIT_AS, (max_memory, max_memory))
     except ImportError:
         return
 

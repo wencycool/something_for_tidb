@@ -56,9 +56,9 @@ def init_sqlite3_db(conn):
     table['tidb_cpuusage'] = 'CREATE TABLE if not exists tidb_cpuusage (time text,hostname varchar(512),ip varchar(512),types varchar(512),cpu_used_percent float)'
     table['tidb_diskinfo'] = 'CREATE TABLE if not exists tidb_diskinfo (time varchar(512),ip_address varchar(512),hostname varchar(512),types_count varchar(512),fstype varchar(512),mountpoint varchar(512),aval_size_gb float,total_size_gb float,used_percent float)'
     table['tidb_memoryusagedetail'] = 'CREATE TABLE if not exists tidb_memoryusagedetail (time varchar(512),ip_address varchar(512),hostname varchar(512),types_count varchar(512),used_percent float)'
-    table['tidb_lockchain'] = 'CREATE TABLE tidb_lockchain (waiting_instance varchar(512),waiting_user varchar(512),waiting_client_ip varchar(512),waiting_transaction varchar(512),waiting_duration_sec int,waiting_current_sql_digest varchar(512),waiting_sql varchar(512),lock_chain_node_type varchar(512),holding_session_id int,kill_holding_session_cmd varchar(512),holding_instance varchar(512),holding_user varchar(512),holding_client_ip varchar(512),holding_transaction varchar(512),holding_sql_digest varchar(512),holding_sql_source varchar(512),holding_sql varchar(512))'
-    table['tidb_locksourcechange'] = 'CREATE TABLE tidb_locksourcechange (source_session_id int,cycle1 int,cycle2 int,cycle3 int,status varchar(512))'
-    table['tidb_metadatalockwait'] = 'CREATE TABLE tidb_metadatalockwait (ddl_job varchar(512),cancel_ddl_job varchar(512),ddl_job_dbname varchar(512),ddl_job_tablename varchar(512),ddl_sql varchar(512),holding_session_id int,kill_holding_session_cmd varchar(512),holding_sqls varchar(512))'
+    table['tidb_lockchain'] = 'CREATE TABLE if not exists tidb_lockchain (waiting_instance varchar(512),waiting_user varchar(512),waiting_client_ip varchar(512),waiting_transaction varchar(512),waiting_duration_sec int,waiting_current_sql_digest varchar(512),waiting_sql varchar(512),lock_chain_node_type varchar(512),holding_session_id int,kill_holding_session_cmd varchar(512),holding_instance varchar(512),holding_user varchar(512),holding_client_ip varchar(512),holding_transaction varchar(512),holding_sql_digest varchar(512),holding_sql_source varchar(512),holding_sql varchar(512))'
+    table['tidb_locksourcechange'] = 'CREATE TABLE if not exists tidb_locksourcechange (source_session_id int,cycle1 int,cycle2 int,cycle3 int,status varchar(512))'
+    table['tidb_metadatalockwait'] = 'CREATE TABLE if not exists tidb_metadatalockwait (ddl_job varchar(512),cancel_ddl_job varchar(512),ddl_job_dbname varchar(512),ddl_job_tablename varchar(512),ddl_sql varchar(512),holding_session_id int,kill_holding_session_cmd varchar(512),holding_sqls varchar(512))'
     for table_name, sql in table.items():
         conn.execute(sql)
 
@@ -221,6 +221,57 @@ def collect(args):
                 process_cluster(cluster_info.cluster_name, cluster_info.ip, cluster_info.port, user, password)
 
 
+class Qps(BaseTable):
+    def __init__(self):
+        self.time = datetime.now()
+        self.qps = 0.0
+        super().__init__()
+
+def get_qps(conn):
+    sql_text = """select time,
+       round(sum(value), 2) as qps
+from METRICS_SCHEMA.tidb_qps
+where type in ('StmtSendLongData', 'Query', 'StmtExecute', 'StmtPrepare', 'StmtFetch')
+  and time between now() - interval 60 minute and now()
+group by time
+order by time;"""
+    qps: List[Qps] = []
+    cursor = conn.cursor()
+    cursor.execute(sql_text)
+    for row in cursor:
+        qps_instance = Qps()
+        qps_instance.time = row[0]
+        qps_instance.qps = row[1]
+        qps.append(qps_instance)
+    cursor.close()
+    return qps
+
+class AvgResponseTime(BaseTable):
+    def __init__(self):
+        self.instance = ""
+        self.time = datetime.now()
+        self.avg_response_time_ms = 0.0
+        super().__init__()
+
+def get_avg_response_time(conn):
+    sql_text = """select instance, time, round(1000 * avg(value), 2) as avg_response_time_ms
+from METRICS_SCHEMA.tidb_query_duration
+where quantile = 0.5
+  and time between now() - interval 60 minute and now()
+group by time, instance
+order by instance, time;"""
+    avg_response_times: List[AvgResponseTime] = []
+    cursor = conn.cursor()
+    cursor.execute(sql_text)
+    for row in cursor:
+        avg_response_time = AvgResponseTime()
+        avg_response_time.instance = row[0]
+        avg_response_time.time = row[1]
+        avg_response_time.avg_response_time_ms = row[2]
+        avg_response_times.append(avg_response_time)
+    cursor.close()
+    return avg_response_times
+
 
 def report(args):
     """
@@ -275,7 +326,7 @@ def main():
     report_parser.add_argument("-o", "--output", type=str, help="输出html文件路径,默认当前路径", default=".")
     args = parser.parse_args()
     # todo 打开内存控制参数
-    # set_max_memory()
+    set_max_memory()
     set_logger(args.log)
     if args.command == "collect":
         collect(args)
