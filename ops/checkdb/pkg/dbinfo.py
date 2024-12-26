@@ -1112,7 +1112,7 @@ def get_active_session_count(conn):
 #        tmv.db_name                                          ddl_job_dbname,
 #        tmv.table_name                                       ddl_job_tablename,
 #        tmv.query                                            waiting_ddl_sql,
-#        'yes'                         as ddl_is_locksource,
+#        'no'                         as ddl_is_locksource,
 #        0 as ddl_blocking_count
 # from mysql.tidb_mdl_view tmv;
 class MetadataLockWait(BaseTable):
@@ -1144,7 +1144,7 @@ def get_metadata_lock_wait(conn):
        tmv.db_name                                          ddl_job_dbname,
        tmv.table_name                                       ddl_job_tablename,
        tmv.query                                            waiting_ddl_sql,
-       'yes'                         as ddl_is_locksource,
+       'no'                         as ddl_is_locksource,
        0 as ddl_blocking_count
 from mysql.tidb_mdl_view tmv;
     """
