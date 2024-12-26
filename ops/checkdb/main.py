@@ -58,7 +58,7 @@ def init_sqlite3_db(conn):
     table['tidb_memoryusagedetail'] = 'CREATE TABLE if not exists tidb_memoryusagedetail (time varchar(512),ip_address varchar(512),hostname varchar(512),types_count varchar(512),used_percent float)'
     table['tidb_lockchain'] = 'CREATE TABLE if not exists tidb_lockchain (waiting_instance varchar(512),waiting_user varchar(512),waiting_client_ip varchar(512),waiting_transaction varchar(512),waiting_duration_sec int,waiting_current_sql_digest varchar(512),waiting_sql varchar(512),lock_chain_node_type varchar(512),holding_session_id int,kill_holding_session_cmd varchar(512),holding_instance varchar(512),holding_user varchar(512),holding_client_ip varchar(512),holding_transaction varchar(512),holding_sql_digest varchar(512),holding_sql_source varchar(512),holding_sql varchar(512))'
     table['tidb_locksourcechange'] = 'CREATE TABLE if not exists tidb_locksourcechange (source_session_id int,cycle1 int,cycle2 int,cycle3 int,status varchar(512))'
-    table['tidb_metadatalockwait'] = 'CREATE TABLE if not exists tidb_metadatalockwait (ddl_job varchar(512),cancel_ddl_job varchar(512),ddl_job_dbname varchar(512),ddl_job_tablename varchar(512),ddl_sql varchar(512),holding_session_id int,kill_holding_session_cmd varchar(512),holding_sqls varchar(512))'
+    table['tidb_metadatalockwait'] = 'CREATE TABLE if not exists tidb_metadatalockwait (session_id int,sql_digests varchar(1024),job_id int,cancel_ddl_job varchar(512),ddl_job_dbname varchar(512),ddl_job_tablename varchar(512),ddl_sql varchar(512),ddl_is_locksource varchar(512),ddl_blocking_count int)'
     for table_name, sql in table.items():
         conn.execute(sql)
 

@@ -1104,25 +1104,28 @@ def get_active_session_count(conn):
     return active_session_counts
 
 # 查看元数据锁等待情况，到数据库中执行时候可能会偏慢
-# select tmv.job_id                                        as ddl_job,
-#        concat('admin cancel ddl jobs ', tmv.job_id, ';') as cancel_ddl_job,
+# select /*+ MAX_EXECUTION_TIME(10000) MEMORY_QUOTA(1024 MB) */
+#        tmv.session_id                                    as holding_session_id,
+#        sql_digests                                       as holding_sqls,
+#        tmv.job_id                                        as waiting_ddl_job,
+#        concat('admin cancel ddl jobs ', tmv.job_id, ';') as cancel_waiting_ddl_job,
 #        tmv.db_name                                          ddl_job_dbname,
 #        tmv.table_name                                       ddl_job_tablename,
-#        tmv.query                                            ddl_sql,
-#        tmv.session_id                                    as waitter_session_id,
-#        tmv.txnstart                                      as waitter_txnstart,
-#        sql_digests                                       as waitter_sqls
+#        tmv.query                                            waiting_ddl_sql,
+#        'yes'                         as ddl_is_locksource,
+#        0 as ddl_blocking_count
 # from mysql.tidb_mdl_view tmv;
 class MetadataLockWait(BaseTable):
     def __init__(self):
-        self.ddl_job = ""
+        self.session_id = 0
+        self.sql_digests = ""
+        self.job_id = 0
         self.cancel_ddl_job = ""
         self.ddl_job_dbname = ""
         self.ddl_job_tablename = ""
         self.ddl_sql = ""
-        self.holding_session_id = 0
-        self.kill_holding_session_cmd = ""
-        self.holding_sqls = ""
+        self.ddl_is_locksource = ""
+        self.ddl_blocking_count = 0
         super().__init__()
 
 def get_metadata_lock_wait(conn):
@@ -1134,15 +1137,16 @@ def get_metadata_lock_wait(conn):
     """
     sql_text = """
     select /*+ MAX_EXECUTION_TIME(10000) MEMORY_QUOTA(1024 MB) */
-           tmv.job_id                                        as ddl_job,
-           concat('admin cancel ddl jobs ', tmv.job_id, ';') as cancel_ddl_job,
-           tmv.db_name                                          ddl_job_dbname,
-           tmv.table_name                                       ddl_job_tablename,
-           tmv.query                                            ddl_sql,
-           tmv.session_id                                    as holding_session_id,
-           concat('kill tidb ', tmv.session_id, ';')           as kill_holding_session_cmd,
-           sql_digests                                       as holding_sqls
-    from mysql.tidb_mdl_view tmv;
+       tmv.session_id                                    as holding_session_id,
+       sql_digests                                       as holding_sqls,
+       tmv.job_id                                        as waiting_ddl_job,
+       concat('admin cancel ddl jobs ', tmv.job_id, ';') as cancel_waiting_ddl_job,
+       tmv.db_name                                          ddl_job_dbname,
+       tmv.table_name                                       ddl_job_tablename,
+       tmv.query                                            waiting_ddl_sql,
+       'yes'                         as ddl_is_locksource,
+       0 as ddl_blocking_count
+from mysql.tidb_mdl_view tmv;
     """
     metadata_lock_waits: List[MetadataLockWait] = []
     cursor = conn.cursor()
@@ -1153,14 +1157,15 @@ def get_metadata_lock_wait(conn):
         return metadata_lock_waits
     for row in cursor:
         metadata_lock_wait = MetadataLockWait()
-        metadata_lock_wait.ddl_job = row[0]
-        metadata_lock_wait.cancel_ddl_job = row[1]
-        metadata_lock_wait.ddl_job_dbname = row[2]
-        metadata_lock_wait.ddl_job_tablename = row[3]
-        metadata_lock_wait.ddl_sql = row[4]
-        metadata_lock_wait.holding_session_id = row[5]
-        metadata_lock_wait.kill_holding_session_cmd = row[6]
-        metadata_lock_wait.holding_sqls = row[7]
+        metadata_lock_wait.session_id = row[0]
+        metadata_lock_wait.sql_digests = row[1]
+        metadata_lock_wait.job_id = row[2]
+        metadata_lock_wait.cancel_ddl_job = row[3]
+        metadata_lock_wait.ddl_job_dbname = row[4]
+        metadata_lock_wait.ddl_job_tablename = row[5]
+        metadata_lock_wait.ddl_sql = row[6]
+        metadata_lock_wait.ddl_is_locksource = row[7]
+        metadata_lock_wait.ddl_blocking_count = row[8]
         metadata_lock_waits.append(metadata_lock_wait)
     cursor.close()
     return metadata_lock_waits

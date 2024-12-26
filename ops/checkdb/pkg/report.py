@@ -117,7 +117,7 @@ from tidb_locksourcechange""",
     ]
     queries["元数据锁"] = [
         "table",
-        """select ddl_job,ddl_job_dbname,ddl_job_tablename,holding_session_id,kill_holding_session_cmd,ddl_sql,holding_sqls as holding_sql from tidb_metadatalockwait""",
+        """select * from tidb_metadatalockwait""",
         "查询元数据锁等待详情，当存在元数据锁等待时，并不影响业务，只是DDL会等待DML提交"
     ]
     queries["集群QPS"] = [
