@@ -1117,13 +1117,13 @@ def get_active_session_count(conn):
 # from mysql.tidb_mdl_view tmv;
 class MetadataLockWait(BaseTable):
     def __init__(self):
-        self.session_id = 0
-        self.sql_digests = ""
-        self.job_id = 0
+        self.holding_session_id = 0
+        self.holding_sqls = ""
+        self.waiting_ddl_job = 0
         self.cancel_ddl_job = ""
         self.ddl_job_dbname = ""
         self.ddl_job_tablename = ""
-        self.ddl_sql = ""
+        self.waiting_ddl_sql = ""
         self.ddl_is_locksource = ""
         self.ddl_blocking_count = 0
         super().__init__()
@@ -1157,15 +1157,15 @@ from mysql.tidb_mdl_view tmv;
         return metadata_lock_waits
     for row in cursor:
         metadata_lock_wait = MetadataLockWait()
-        metadata_lock_wait.session_id = row[0]
-        metadata_lock_wait.sql_digests = row[1]
-        metadata_lock_wait.job_id = row[2]
+        metadata_lock_wait.holding_session_id = row[0]
+        metadata_lock_wait.holding_sqls = row[1]
+        metadata_lock_wait.waiting_ddl_job = row[2]
         metadata_lock_wait.cancel_ddl_job = row[3]
         metadata_lock_wait.ddl_job_dbname = row[4]
         metadata_lock_wait.ddl_job_tablename = row[5]
-        metadata_lock_wait.ddl_sql = row[6]
+        metadata_lock_wait.waiting_ddl_sql = row[6]
         metadata_lock_wait.ddl_is_locksource = row[7]
-        metadata_lock_wait.ddl_blocking_count = row[8]
+        metadata_lock_wait.ddl_blocking_count = row[8]  
         metadata_lock_waits.append(metadata_lock_wait)
     cursor.close()
     return metadata_lock_waits

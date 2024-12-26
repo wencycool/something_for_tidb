@@ -36,7 +36,7 @@ def report_queries():
     ]
     queries["连接数分布情况"] = [
         "table",
-        "SELECT type,hostname,instance,connection_count,configured_max_counnection_count,connection_ratio * 100 as connection_percent FROM tidb_connectioninfo",
+        "SELECT type, hostname, instance, CASE WHEN (SELECT SUM(active_count) FROM tidb_activeconnectioninfo) > connection_count THEN (SELECT SUM(active_count) FROM tidb_activeconnectioninfo) ELSE connection_count END AS connection_count, configured_max_counnection_count, connection_ratio * 100 AS connection_percent FROM tidb_connectioninfo",
         "各tidb节点连接数分布情况"
     ]
     queries["活动连接数汇总"] = [
@@ -83,12 +83,12 @@ from tidb_activeconnectioninfo;
     queries["锁等待详情"] = [
         "table",
         """SELECT
-    substr(waiting_current_sql_digest,1,16) as short_waiting_digest,
-    waiting_user,
-    waiting_duration_sec,
     holding_session_id,
     holding_user,
     kill_holding_session_cmd,
+    substr(waiting_current_sql_digest,1,16) as short_waiting_digest,
+    waiting_user,
+    waiting_duration_sec,
     waiting_instance,
     waiting_client_ip,
     waiting_transaction,
@@ -117,7 +117,7 @@ from tidb_locksourcechange""",
     ]
     queries["元数据锁"] = [
         "table",
-        """select * from tidb_metadatalockwait""",
+        """select * from tidb_metadatalockwait;""",
         "查询元数据锁等待详情，当存在元数据锁等待时，并不影响业务，只是DDL会等待DML提交"
     ]
     queries["集群QPS"] = [
