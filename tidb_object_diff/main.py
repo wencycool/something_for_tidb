@@ -110,23 +110,47 @@ def dump_sequences_ddl(conn: pymysql.connect, schema_filter: List[str] = [], rec
     step_plus = 10000  # 需要增加的步长
     where_schema_filter = "where sequence_schema in (" + ",".join(
         list(map(lambda x: f"'{x}'", schema_filter))) + ")" if len(schema_filter) != 0 else ""
-    cursor.execute(
-        f"select sequence_schema,sequence_name,cache,cache_value,cycle,increment,max_value,min_value,start,comment from information_schema.sequences {where_schema_filter};")
-    for row in cursor.fetchall():
-        cursor.execute(f"select nextval(`%s`.`%s`) as col" % (row["sequence_schema"], row["sequence_name"]))
-        current_val = cursor.fetchone()["col"]
-        next_val = current_val + step_plus  # 当前基础上加一万作为下一个初始值
-        drop_sequence_ddl = "drop sequence if exists `%s`.`%s`;" % (row["sequence_schema"], row["sequence_name"])
-        create_sequence_ddl = "%screate sequence `%s`.`%s` start with %d minvalue %d maxvalue %d increment by %d %s %s " \
-                              "comment='%s';" % ( drop_sequence_ddl if recreate_flag else "",
-                                  row["sequence_schema"], row["sequence_name"], next_val, row["min_value"],
-                                  row["max_value"],
-                                  row["increment"],
-                                  "nocache" if row["cache"] == 0 else "cache " + str(row["cache_value"]),
-                                  "nocycle" if row["cycle"] == 0 else "cycle", row["comment"]
-                              )
-        sequence_map[row["sequence_schema"] + "." + row["sequence_name"]] = create_sequence_ddl
-    cursor.close()
+    try:
+        cursor.execute(
+            f"select sequence_schema,sequence_name,cache,cache_value,cycle,increment,max_value,min_value,start,comment from information_schema.sequences {where_schema_filter};")
+        for row in cursor.fetchall():
+            try:
+                cursor.execute(f"select nextval(`{row['sequence_schema']}`.`{row['sequence_name']}`) as col")
+                result = cursor.fetchone()
+                current_val = result["col"] if result else 0
+                next_val = current_val + step_plus  # 当前基础上加一万作为下一个初始值
+                
+                # 处理可能为None的数值
+                min_value = row["min_value"] if row["min_value"] is not None else 1
+                max_value = row["max_value"] if row["max_value"] is not None else (1 << 63) - 1
+                increment = row["increment"] if row["increment"] is not None else 1
+                cache_value = row["cache_value"] if row["cache_value"] is not None else 1000
+                comment = row["comment"] if row["comment"] is not None else ""
+                
+                # 转义comment中的特殊字符
+                comment = comment.replace("'", "\\'")
+                
+                drop_sequence_ddl = "drop sequence if exists `%s`.`%s`;" % (row["sequence_schema"], row["sequence_name"])
+                create_sequence_ddl = "%screate sequence `%s`.`%s` start with %d minvalue %d maxvalue %d increment by %d %s %s comment='%s';" % (
+                    drop_sequence_ddl if recreate_flag else "",
+                    row["sequence_schema"], 
+                    row["sequence_name"], 
+                    next_val,
+                    min_value,
+                    max_value,
+                    increment,
+                    "nocache" if row.get("cache", 0) == 0 else f"cache {cache_value}",
+                    "nocycle" if row.get("cycle", 0) == 0 else "cycle",
+                    comment
+                )
+                sequence_map[row["sequence_schema"] + "." + row["sequence_name"]] = create_sequence_ddl
+            except Exception as e:
+                logging.error(f"Error processing sequence {row['sequence_schema']}.{row['sequence_name']}: {str(e)}")
+                continue
+    except Exception as e:
+        logging.error(f"Error querying sequences: {str(e)}")
+    finally:
+        cursor.close()
     return sequence_map
 
 
@@ -135,12 +159,32 @@ def get_sequence_map(conn: pymysql.connect, schema_filter: List[str] = []) -> Di
     cursor = conn.cursor(pymysql.cursors.Cursor)
     where_schema_filter = "where sequence_schema in (" + ",".join(
         list(map(lambda x: f"'{x}'", schema_filter))) + ")" if len(schema_filter) != 0 else ""
-    cursor.execute(
-        f"select sequence_schema,sequence_name,cycle,increment,max_value,min_value from information_schema.sequences {where_schema_filter};")
-    for row in cursor.fetchall():
-        seq_map[row[0] + "." + row[1]] = Sequence(sequence_schema=row[0], sequence_name=row[1], cycle=row[2],
-                                                  increment=row[3], max_value=row[4], min_value=row[5])
-    cursor.close()
+    try:
+        cursor.execute(
+            f"select sequence_schema,sequence_name,cycle,increment,max_value,min_value from information_schema.sequences {where_schema_filter};")
+        for row in cursor.fetchall():
+            try:
+                # 处理可能为None的值
+                cycle = 0 if row[2] is None else row[2]
+                increment = 1 if row[3] is None else row[3]
+                max_value = (1 << 63) - 1 if row[4] is None else row[4]
+                min_value = 1 if row[5] is None else row[5]
+                
+                seq_map[row[0] + "." + row[1]] = Sequence(
+                    sequence_schema=row[0],
+                    sequence_name=row[1],
+                    cycle=cycle,
+                    increment=increment,
+                    max_value=max_value,
+                    min_value=min_value
+                )
+            except Exception as e:
+                logging.error(f"Error processing sequence {row[0]}.{row[1]}: {str(e)}")
+                continue
+    except Exception as e:
+        logging.error(f"Error querying sequences: {str(e)}")
+    finally:
+        cursor.close()
     return seq_map
 
 
@@ -325,6 +369,7 @@ def check(args):
         print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
 
     logging.info("查看重点参数差异")
+    # 获取系统变量参数
     src_var_map = get_variable_map(src_connection)
     tgt_var_map = get_variable_map(tgt_connection)
     k = "[Variable]"
