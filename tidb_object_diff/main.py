@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple, Type
 import logging, hashlib
 import getpass, argparse
 import re
+import sys
 
 logging.basicConfig(
     level=logging.DEBUG,  # 设置日志级别为 DEBUG，可以根据需要调整
@@ -292,22 +293,63 @@ def get_map_diff(a: Dict[str, Type], b: Dict[str, Type]) -> Dict[str, Tuple]:
     return output_dict
 
 
+def create_parser():
+    """创建命令行参数解析器"""
+    parser = argparse.ArgumentParser(description="TiDB对象差异比较工具")
+    
+    # 创建子命令解析器
+    subparsers = parser.add_subparsers(title="Subcommands", dest="subcommand")
+    
+    # 添加check子命令
+    parser_check = subparsers.add_parser("check", help="表结构对比检查")
+    parser_check.add_argument('--src-host', help="上游IP地址", required=True)
+    parser_check.add_argument('--tgt-host', help="下游IP地址", required=True)
+    parser_check.add_argument('--tgt-port', help="端口号,默认4000", default=4000, type=int)
+    parser_check.add_argument('--src-port', help="端口号,默认4000", default=4000, type=int)
+    parser_check.add_argument('--user', '-u', help="用户名", default="root")
+    parser_check.add_argument('--password', '-p', help="密码", nargs='?')
+    parser_check.add_argument('--schema-list', '-s',
+                            help="schema列表，指定多个用分隔符隔开，比如：db1,db2,db3，默认包含所有schema", 
+                            default="*")
+
+    # 添加dump-seq子命令
+    parser_dumpseq = subparsers.add_parser("dump-seq", help="导出sequence")
+    parser_dumpseq.add_argument('-H', '--host', help="IP地址", required=True)
+    parser_dumpseq.add_argument('-P', '--port', help="端口号", default=4000, type=int)
+    parser_dumpseq.add_argument('-u', '--user', help="用户名", default="root")
+    parser_dumpseq.add_argument('-p', '--password', help="密码", nargs='?')
+    parser_dumpseq.add_argument('--schema-list', '-s',
+                             help="schema列表，指定多个用分隔符隔开，比如：db1,db2,db3，默认包含所有schema", 
+                             default="*")
+    
+    return parser
+
+
 def check(args):
+    """执行check子命令"""
     if args.password is None:
-        args.password = getpass.getpass("Enter your password:")
-    schema_filter = args.schema_list.split(',')
-    if len(schema_filter) == 0 or schema_filter[0] == "*":
-        schema_filter = []
-    logging.info(f"schema列表为:{schema_filter}")
-    try:
-        src_connection = pymysql.connect(host=args.src_host, port=args.src_port, user=args.user, password=args.password,
-                                         database="information_schema", cursorclass=pymysql.cursors.DictCursor)
-        tgt_connection = pymysql.connect(host=args.tgt_host, port=args.tgt_port, user=args.user, password=args.password,
-                                         database="information_schema", cursorclass=pymysql.cursors.DictCursor)
-    except pymysql.Error as e:
-        print(f"Connect Error:{e}")
+        args.password = getpass.getpass()
+    schema_filter = []
+    if args.schema_list != "*":
+        schema_filter = args.schema_list.split(",")
+    src_connection = pymysql.connect(host=args.src_host, port=args.src_port, user=args.user,
+                                   password=args.password)
+    tgt_connection = pymysql.connect(host=args.tgt_host, port=args.tgt_port, user=args.user,
+                                   password=args.password)
+    src_index_map = get_index_map(src_connection, schema_filter)
+    tgt_index_map = get_index_map(tgt_connection, schema_filter)
     src_table_map = get_simpltable_map(src_connection, schema_filter)
     tgt_table_map = get_simpltable_map(tgt_connection, schema_filter)
+    src_user_map = get_user_map(src_connection)
+    tgt_user_map = get_user_map(tgt_connection)
+    src_sequence_map = get_sequence_map(src_connection, schema_filter)
+    tgt_sequence_map = get_sequence_map(tgt_connection, schema_filter)
+    src_constraints_map = get_constraints_map(src_connection, schema_filter)
+    tgt_constraints_map = get_constraints_map(tgt_connection, schema_filter)
+    src_variable_map = get_variable_map(src_connection)
+    tgt_variable_map = get_variable_map(tgt_connection)
+    src_binding_map = get_binding_map(src_connection)
+    tgt_binding_map = get_binding_map(tgt_connection)
 
     logging.info("检查表情况，")
     # 定义占位符距离
@@ -321,8 +363,6 @@ def check(args):
 
     # 检查索引
     logging.info("查看索引差异")
-    src_index_map = get_index_map(src_connection, schema_filter)
-    tgt_index_map = get_index_map(tgt_connection, schema_filter)
     k = "[INDEX]"
     v = ("source", "target", "difference")
     print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
@@ -331,8 +371,6 @@ def check(args):
 
     # 检查sequence
     logging.info("查看Sequence差异")
-    src_sequence_map = get_sequence_map(src_connection, schema_filter)
-    tgt_sequence_map = get_sequence_map(tgt_connection, schema_filter)
     k = "[SEQUENCE]"
     v = ("source", "target", "difference")
     print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
@@ -341,8 +379,6 @@ def check(args):
 
     # 检查binding
     logging.info("查看binding差异")
-    src_binding_map = get_binding_map(src_connection)
-    tgt_binding_map = get_binding_map(tgt_connection)
     k = "[BINDING]"
     v = ("source", "target", "difference")
     print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
@@ -351,8 +387,6 @@ def check(args):
 
     # 检查约束
     logging.info("查看约束差异")
-    src_constraints_map = get_constraints_map(src_connection, schema_filter)
-    tgt_constraints_map = get_constraints_map(tgt_connection, schema_filter)
     k = "[CONSTRAINTS]"
     v = ("source", "target", "difference")
     print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
@@ -360,8 +394,6 @@ def check(args):
         print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
 
     logging.info("查看用户差异")
-    src_user_map = get_user_map(src_connection)
-    tgt_user_map = get_user_map(tgt_connection)
     k = "[USER]"
     v = ("source", "target", "difference")
     print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
@@ -370,53 +402,44 @@ def check(args):
 
     logging.info("查看重点参数差异")
     # 获取系统变量参数
-    src_var_map = get_variable_map(src_connection)
-    tgt_var_map = get_variable_map(tgt_connection)
     k = "[Variable]"
     v = ("source", "target", "difference")
     print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
-    for k, v in get_map_diff(src_var_map, tgt_var_map).items():
+    for k, v in get_map_diff(src_variable_map, tgt_variable_map).items():
         print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
 
 def dump_seq(args):
+    """执行dump-seq子命令"""
     if args.password is None:
-        args.password = getpass.getpass("Enter your password:")
-    try:
-        connection = pymysql.connect(host=args.host, port=args.port, user=args.user, password=args.password,
-                                         database="information_schema", cursorclass=pymysql.cursors.DictCursor)
-    except pymysql.Error as e:
-        print(f"Connect Error:{e}")
-    schema_filter = args.schema_list.split(',')
-    if len(schema_filter) == 0 or schema_filter[0] == "*":
-        schema_filter = []
-    logging.info(f"schema列表为:{schema_filter}")
-    for v in dump_sequences_ddl(connection,schema_filter).values():
+        args.password = getpass.getpass()
+    schema_filter = []
+    if args.schema_list != "*":
+        schema_filter = args.schema_list.split(",")
+    connection = pymysql.connect(host=args.host, port=args.port, user=args.user, password=args.password)
+    for v in dump_sequences_ddl(connection, schema_filter).values():
         print(v)
-def main():
-    parser = argparse.ArgumentParser(description="ticdc检查工具")
-    subparsers = parser.add_subparsers(title="Subcommands", dest="subcommand", required=True)
-    parser_check = subparsers.add_parser("check", help="表结构对比检查")
-    parser_check.add_argument('--src-host', help="上游IP地址", required=True)
-    parser_check.add_argument('--tgt-host', help="下游IP地址", required=True)
-    parser_check.add_argument('--tgt-port', help="端口号,默认4000", default=4000, type=int)
-    parser_check.add_argument('--src-port', help="端口号,默认4000", default=4000, type=int)
-    parser_check.add_argument('--user', '-u', help="用户名", default="root")
-    parser_check.add_argument('--password', '-p', help="密码", nargs='?')
-    parser_check.add_argument('--schema-list', '-s',
-                              help="schema列表，指定多个用分隔符隔开，比如：db1,db2,db3，默认包含所有schema", default="*")
 
-    parser_dumpseq = subparsers.add_parser("dump-seq",help="导出sequence")
-    parser_dumpseq.add_argument('-H','--host',help="IP地址",required=True)
-    parser_dumpseq.add_argument('-P', '--port', help="端口号",default=4000,type=int)
-    parser_dumpseq.add_argument('-u', '--user', help="用户名", default="root")
-    parser_dumpseq.add_argument('-p', '--password', help="密码", nargs='?')
-    parser_dumpseq.add_argument('--schema-list', '-s',
-                              help="schema列表，指定多个用分隔符隔开，比如：db1,db2,db3，默认包含所有schema", default="*")
-    args = parser.parse_args()
-    if args.subcommand == "check":
-        check(args)
-    elif args.subcommand == "dump-seq":
-        dump_seq(args)
+def main():
+    """主函数"""
+    try:
+        parser = create_parser()
+        args = parser.parse_args()
+        
+        # Python 3.6 兼容：手动检查是否提供了子命令
+        if not args.subcommand:
+            parser.print_help()
+            sys.exit(1)
+            
+        # 执行对应的子命令
+        if args.subcommand == "check":
+            check(args)
+        elif args.subcommand == "dump-seq":
+            dump_seq(args)
+            
+    except Exception as e:
+        logging.error(f"执行出错: {str(e)}")
+        sys.exit(1)
+
 if __name__ == "__main__":
     main()
 
