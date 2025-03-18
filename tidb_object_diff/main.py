@@ -102,22 +102,46 @@ class Sequence:
         self.min_value = min_value
 
 
-def dump_sequences_ddl(conn: pymysql.connect, schema_filter: List[str] = [], recreate_flag=True) -> Dict[str, str]:
+def dump_sequences_ddl(src_conn: pymysql.connect, tgt_conn: pymysql.connect = None, schema_filter: List[str] = [], recreate_flag=True) -> Dict[str, str]:
     """
-    导出Sequence创建脚本，会根据当前的nextval基础上加上一个步长(一万）作为初始值，导出的Sequence主要用于ticdc的下游使用
+    导出Sequence创建脚本，按照如下方式执行：
+    1. 获取源端和目标端的Sequence信息
+    2. 根据原端和目标端的sequence信息来查看目标端sequence是否需要新创建
+    3. 如果需要新创建，则根据源端和目标端的sequence信息来生成创建脚本
+    4. 对于所有sequence，使用setval方式在当前nextval基础上加上一个步长(一万）作为初始值，导出的Sequence主要用于ticdc的下游使用
+    Args:
+        src_conn: 源端连接
+        tgt_conn: 目标端连接
+        schema_filter: 需要导出的schema列表
+        recreate_flag: 是否重新创建Sequence
+    Returns:
+        sequence_map: 导出的Sequence创建脚本
     """
     sequence_map = {}
-    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    target_sequence_map = {} # 目标端sequence信息，对于在目标端已经存在的sequence，无需重复创建，只生成select setval的语句
+    src_cursor = src_conn.cursor(pymysql.cursors.DictCursor)
+    
     step_plus = 10000  # 需要增加的步长
     where_schema_filter = "where sequence_schema in (" + ",".join(
         list(map(lambda x: f"'{x}'", schema_filter))) + ")" if len(schema_filter) != 0 else ""
+    if tgt_conn is not None:
+        try:
+            tgt_cursor = tgt_conn.cursor(pymysql.cursors.DictCursor)
+            tgt_cursor.execute(f"select sequence_schema,sequence_name from information_schema.sequences {where_schema_filter};")
+            for row in tgt_cursor.fetchall():
+                target_sequence_map[f"`{row['sequence_schema']}`.`{row['sequence_name']}`"] = True
+        except Exception as e:
+            logging.error(f"Error querying sequences: {str(e)}")
+        finally:
+            tgt_cursor.close()
+        
     try:
-        cursor.execute(
+        src_cursor.execute(
             f"select sequence_schema,sequence_name,cache,cache_value,cycle,increment,max_value,min_value,start,comment from information_schema.sequences {where_schema_filter};")
-        for row in cursor.fetchall():
+        for row in src_cursor.fetchall():
             try:
-                cursor.execute(f"select nextval(`{row['sequence_schema']}`.`{row['sequence_name']}`) as col")
-                result = cursor.fetchone()
+                src_cursor.execute(f"select nextval(`{row['sequence_schema']}`.`{row['sequence_name']}`) as col")
+                result = src_cursor.fetchone()
                 current_val = result["col"] if result else 0
                 next_val = current_val + step_plus  # 当前基础上加一万作为下一个初始值
                 
@@ -127,31 +151,33 @@ def dump_sequences_ddl(conn: pymysql.connect, schema_filter: List[str] = [], rec
                 increment = row["increment"] if row["increment"] is not None else 1
                 cache_value = row["cache_value"] if row["cache_value"] is not None else 1000
                 comment = row["comment"] if row["comment"] is not None else ""
-                
+                # todo 这里需要判断next_val是否大于max_value，目前没有判断
                 # 转义comment中的特殊字符
                 comment = comment.replace("'", "\\'")
-                
-                drop_sequence_ddl = "drop sequence if exists `%s`.`%s`;" % (row["sequence_schema"], row["sequence_name"])
-                create_sequence_ddl = "%screate sequence `%s`.`%s` start with %d minvalue %d maxvalue %d increment by %d %s %s comment='%s';" % (
-                    drop_sequence_ddl if recreate_flag else "",
-                    row["sequence_schema"], 
-                    row["sequence_name"], 
-                    next_val,
-                    min_value,
-                    max_value,
-                    increment,
-                    "nocache" if row.get("cache", 0) == 0 else f"cache {cache_value}",
-                    "nocycle" if row.get("cycle", 0) == 0 else "cycle",
-                    comment
-                )
-                sequence_map[row["sequence_schema"] + "." + row["sequence_name"]] = create_sequence_ddl
+                sequence_name = f"`{row['sequence_schema']}`.`{row['sequence_name']}`"
+                if sequence_name in target_sequence_map:
+                    sequence_map[sequence_name] = f"select setval({sequence_name}, {next_val});"
+                else:
+                    drop_sequence_ddl = f"drop sequence if exists {sequence_name};"
+                    create_sequence_ddl = "%screate sequence %s start with %d minvalue %d maxvalue %d increment by %d %s %s comment='%s';" % (
+                        drop_sequence_ddl if recreate_flag else "",
+                        sequence_name,
+                        next_val,
+                        min_value,
+                        max_value,
+                        increment,
+                        "nocache" if row.get("cache", 0) == 0 else f"cache {cache_value}",
+                        "nocycle" if row.get("cycle", 0) == 0 else "cycle",
+                        comment
+                    )
+                    sequence_map[sequence_name] = create_sequence_ddl
             except Exception as e:
                 logging.error(f"Error processing sequence {row['sequence_schema']}.{row['sequence_name']}: {str(e)}")
                 continue
     except Exception as e:
         logging.error(f"Error querying sequences: {str(e)}")
     finally:
-        cursor.close()
+        src_cursor.close()
     return sequence_map
 
 
@@ -292,10 +318,22 @@ def get_map_diff(a: Dict[str, Type], b: Dict[str, Type]) -> Dict[str, Tuple]:
             output_dict[k] = ("-", "-", "+")
     return output_dict
 
-
+class CustomHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    """自定义帮助信息格式化器，同时显示默认值和必填标记"""
+    def _get_help_string(self, action):
+        # 先获取默认的帮助字符串（包含默认值信息）
+        default_help = super()._get_help_string(action)
+        
+        # 如果是必填参数，在默认帮助文本前添加必填标记
+        if action.required:
+            return f'(必填) {default_help}'
+        
+        return default_help
+    
 def create_parser():
     """创建命令行参数解析器"""
-    parser = argparse.ArgumentParser(description="TiDB对象差异比较工具")
+    parser = argparse.ArgumentParser(description="TiDB对象差异比较工具",
+                                     formatter_class=CustomHelpFormatter)
     
     # 创建子命令解析器
     subparsers = parser.add_subparsers(title="Subcommands", dest="subcommand")
@@ -313,8 +351,11 @@ def create_parser():
                             default="*")
 
     # 添加dump-seq子命令
-    parser_dumpseq = subparsers.add_parser("dump-seq", help="导出sequence")
+    parser_dumpseq = subparsers.add_parser("dump-seq", help="导出sequence",
+                                           formatter_class=CustomHelpFormatter)
     parser_dumpseq.add_argument('-H', '--host', help="IP地址", required=True)
+    # 添加一个目标端主机，用于做参数对比
+    parser_dumpseq.add_argument('--tgt-host', help="IP地址", required=False)
     parser_dumpseq.add_argument('-P', '--port', help="端口号", default=4000, type=int)
     parser_dumpseq.add_argument('-u', '--user', help="用户名", default="root")
     parser_dumpseq.add_argument('-p', '--password', help="密码", nargs='?')
@@ -416,7 +457,11 @@ def dump_seq(args):
     if args.schema_list != "*":
         schema_filter = args.schema_list.split(",")
     connection = pymysql.connect(host=args.host, port=args.port, user=args.user, password=args.password)
-    for v in dump_sequences_ddl(connection, schema_filter).values():
+    tgt_connection = None
+    if hasattr(args, 'tgt_host') and args.tgt_host:
+        # 使用与源相同的端口，因为dump-seq命令没有单独的tgt_port参数
+        tgt_connection = pymysql.connect(host=args.tgt_host, port=args.port, user=args.user, password=args.password)
+    for v in dump_sequences_ddl(connection,tgt_connection, schema_filter).values():
         print(v)
 
 def main():
