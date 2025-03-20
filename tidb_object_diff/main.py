@@ -51,16 +51,18 @@ class SimplTable:
 
 def get_simpltable_map(conn: pymysql.connect, schema_filter: List[str] = []) -> Dict[str, SimplTable]:
     simpl_table_map = {}
-    cursor = conn.cursor()
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
     where_schema_filter = "where table_type in ('BASE TABLE', 'VIEW') and table_schema in (" + ",".join(
         list(map(lambda x: f"'{x}'", schema_filter))) + ")" if len(schema_filter) != 0 else ""
     cursor.execute(
         f"select table_schema,table_name,table_type,tidb_pk_type from information_schema.tables {where_schema_filter};")
     for row in cursor.fetchall():
-        simpl_table_map[row["table_schema"] + "." + row["table_name"]] = SimplTable(table_schema=row["table_schema"],
-                                                                                    table_name=row["table_name"],
-                                                                                    table_type=row["table_type"],
-                                                                                    tidb_pk_type=row["tidb_pk_type"])
+        simpl_table_map[row["table_schema"] + "." + row["table_name"]] = SimplTable(
+            table_schema=row["table_schema"],
+            table_name=row["table_name"],
+            table_type=row["table_type"],
+            tidb_pk_type=row["tidb_pk_type"]
+        )
     cursor.close()
     return simpl_table_map
 
@@ -71,6 +73,7 @@ class User:
         self.host = host
         self.authentication_string = authentication_string
         self.priv_md5 = priv_md5
+        self.has_restricted_replica_writer_admin = False # 对于ticdc复制的用户和指定的用户需要具备该权限
 
 
 def get_user_map(conn: pymysql.connect) -> Dict[str, User]:
@@ -84,6 +87,8 @@ def get_user_map(conn: pymysql.connect) -> Dict[str, User]:
         grants = []
         cursor.execute(f"show grants for {k};")
         for row in cursor.fetchall():
+            if "RESTRICTED_REPLICA_WRITER_ADMIN" in row[0]:
+                user_map[k].has_restricted_replica_writer_admin = True
             grants.append(row[0])
         list.sort(grants)
         user_map[k].priv_md5 = hashlib.md5(";".join(grants).encode()).hexdigest()
@@ -230,7 +235,7 @@ def get_constraints_map(conn: pymysql.connect, schema_filter: List[str] = []) ->
     where_schema_filter = "where table_schema in (" + ",".join(
         list(map(lambda x: f"'{x}'", schema_filter))) + ")" if len(schema_filter) != 0 else ""
     cursor.execute(
-        f"select table_schema,table_name,constraint_name,constraint_type from table_constraints {where_schema_filter};")
+        f"select table_schema,table_name,constraint_name,constraint_type from information_schema.table_constraints {where_schema_filter};")
     for row in cursor.fetchall():
         constraints_map[row[0] + "." + row[1] + "." + row[2]] = Constraints(table_schema=row[0], table_name=row[1],
                                                                             constraint_name=row[2],
@@ -288,6 +293,50 @@ def get_binding_map(conn: pymysql.connect) -> Dict[str, Binding]:
     cursor.close()
     return binding_map
 
+# 检查数据库中是否存在没有主键或者非空唯一约束的表
+def find_nopk_tables(conn: pymysql.connect, schema_filter: List[str] = []) -> List[str]:
+    """
+    查找数据库中没有主键或非空唯一约束的表
+    Args:
+        conn: 数据库连接
+        schema_filter: schema过滤列表
+    Returns:
+        no_pk_tables: 没有主键或非空唯一约束的表列表
+    """
+    no_pk_tables = []
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        # 查询没有主键和唯一非空索引的表
+        query = f"""
+        select table_schema, table_name
+FROM INFORMATION_SCHEMA.TABLES b
+WHERE b.TABLE_SCHEMA not in ('METRICS SCHEMA', 'mysql', ' INFORMATION_SCHEMA', 'PERFORMANCE _SCHEMA', 'test')
+  and table_type = 'BASE TABLE'
+  and (table_schema, table_name) not in (select TABLE_SCHEMA, TABLE_NAME
+                                         from (select TABLE_SCHEMA,
+                                                      TABLE_NAME,
+                                                      INDEX_NAME,
+                                                      GROUP_CONCAT(COLUMN_NAME) as c,
+                                                      group_concat(NULLABLE)    as n
+                                               from INFORMATION_SCHEMA.STATISTICS
+                                               where NON_UNIQUE = 0
+                                                 and TABLE_SCHEMA not in
+                                                     ('METRICS_SCHEMA', 'mysql', ' INFORMATION_SCHEMA',
+                                                      'PERFORMANCE_SCHEMA', 'test')
+                                               group by 1, 2, 3) as tmp
+                                         where tmp.n not like '%YES%');
+        """
+        
+        cursor.execute(query)
+        for row in cursor.fetchall():
+            no_pk_tables.append(f"{row['table_schema']}.{row['table_name']}")
+    except Exception as e:
+        logging.error(f"查询无主键表时发生错误: {str(e)}")
+        raise
+    finally:
+        cursor.close()
+        
+    return no_pk_tables
 
 # 判断两个对象中的变量值是否完全一致
 def compare_objects(obj1, obj2) -> bool:
@@ -355,7 +404,7 @@ def create_parser():
                                            formatter_class=CustomHelpFormatter)
     parser_dumpseq.add_argument('-H', '--host', help="IP地址", required=True)
     # 添加一个目标端主机，用于做参数对比
-    parser_dumpseq.add_argument('--tgt-host', help="IP地址", required=False)
+    parser_dumpseq.add_argument('--tgt-host', help="下游IP地址", required=False)
     parser_dumpseq.add_argument('-P', '--port', help="端口号", default=4000, type=int)
     parser_dumpseq.add_argument('-u', '--user', help="用户名", default="root")
     parser_dumpseq.add_argument('-p', '--password', help="密码", nargs='?')
@@ -391,63 +440,92 @@ def check(args):
     tgt_variable_map = get_variable_map(tgt_connection)
     src_binding_map = get_binding_map(src_connection)
     tgt_binding_map = get_binding_map(tgt_connection)
+    src_nopk_tables = find_nopk_tables(src_connection, schema_filter)
+    tgt_nopk_tables = find_nopk_tables(tgt_connection, schema_filter)
 
-    logging.info("检查表情况，")
-    # 定义占位符距离
-    p1, p2, p2, p3, p4 = 100, 10, 10, 10, 10
-    # 表检查标题
-    k = "[TABLE]"
-    v = ("source", "target", "difference")
-    print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
-    for k, v in get_map_diff(src_table_map, tgt_table_map).items():
-        print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
+    # 定义输出格式
+    def print_section_header(title):
+        print("\n" + "=" * 120)
+        print(f" {title} ".center(120, "="))
+        print("=" * 120)
 
-    # 检查索引
-    logging.info("查看索引差异")
-    k = "[INDEX]"
-    v = ("source", "target", "difference")
-    print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
-    for k, v in get_map_diff(src_index_map, tgt_index_map).items():
-        print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
+    def print_diff_table(title, diff_map, show_header=True):
+        if not diff_map:
+            print(f"\n没有发现{title}差异")
+            return
 
-    # 检查sequence
-    logging.info("查看Sequence差异")
-    k = "[SEQUENCE]"
-    v = ("source", "target", "difference")
-    print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
-    for k, v in get_map_diff(src_sequence_map, tgt_sequence_map).items():
-        print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
+        if show_header:
+            print("\n{:<60} {:<20} {:<20} {:<20}".format("对象名称", "源端", "目标端", "差异类型"))
+            print("-" * 120)
+        
+        for k, v in diff_map.items():
+            diff_type = ""
+            if v == ("+", "-", "-"):
+                diff_type = "仅在源端存在"
+            elif v == ("-", "+", "-"):
+                diff_type = "仅在目标端存在"
+            elif v == ("-", "-", "+"):
+                diff_type = "配置不一致"
+            print("{:<60} {:<20} {:<20} {:<20}".format(k, v[0], v[1], diff_type))
 
-    # 检查binding
-    logging.info("查看binding差异")
-    k = "[BINDING]"
-    v = ("source", "target", "difference")
-    print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
-    for k, v in get_map_diff(src_binding_map, tgt_binding_map).items():
-        print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
+    # 1. 表结构差异
+    print_section_header("表结构差异")
+    print_diff_table("表结构", get_map_diff(src_table_map, tgt_table_map))
 
-    # 检查约束
-    logging.info("查看约束差异")
-    k = "[CONSTRAINTS]"
-    v = ("source", "target", "difference")
-    print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
-    for k, v in get_map_diff(src_constraints_map, tgt_constraints_map).items():
-        print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
+    # 2. 无主键表信息
+    print_section_header("无主键表信息")
+    if src_nopk_tables:
+        print("\n源端无主键表:")
+        for table in src_nopk_tables:
+            print(f"  - {table}")
+    if tgt_nopk_tables:
+        print("\n目标端无主键表:")
+        for table in tgt_nopk_tables:
+            print(f"  - {table}")
+    print(f"\n源端无主键表数量: {len(src_nopk_tables)}")
+    print(f"目标端无主键表数量: {len(tgt_nopk_tables)}")
 
-    logging.info("查看用户差异")
-    k = "[USER]"
-    v = ("source", "target", "difference")
-    print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
-    for k, v in get_map_diff(src_user_map, tgt_user_map).items():
-        print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
+    # 3. 索引差异
+    print_section_header("索引差异")
+    print_diff_table("索引", get_map_diff(src_index_map, tgt_index_map))
 
-    logging.info("查看重点参数差异")
-    # 获取系统变量参数
-    k = "[Variable]"
-    v = ("source", "target", "difference")
-    print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
-    for k, v in get_map_diff(src_variable_map, tgt_variable_map).items():
-        print(f"{k:<{p1}}{v[0]:^{p2}}{v[1]:^{p3}}{v[2]:^{p4}}")
+    # 4. Sequence差异
+    print_section_header("Sequence差异")
+    print_diff_table("Sequence", get_map_diff(src_sequence_map, tgt_sequence_map))
+
+    # 5. Binding差异
+    print_section_header("Binding差异")
+    print_diff_table("Binding", get_map_diff(src_binding_map, tgt_binding_map))
+
+    # 6. 约束差异
+    print_section_header("约束差异")
+    print_diff_table("约束", get_map_diff(src_constraints_map, tgt_constraints_map))
+
+    # 7. 用户差异
+    print_section_header("用户差异")
+    print_diff_table("用户", get_map_diff(src_user_map, tgt_user_map))
+
+    # 8. RESTRICTED_REPLICA_WRITER_ADMIN权限
+    print_section_header("RESTRICTED_REPLICA_WRITER_ADMIN权限")
+    has_admin_users = False
+    for k, v in src_user_map.items():
+        if v.has_restricted_replica_writer_admin:
+            if not has_admin_users:
+                print("\n具有RESTRICTED_REPLICA_WRITER_ADMIN权限的用户:")
+                has_admin_users = True
+            print(f"  源端: {k}")
+    for k, v in tgt_user_map.items():
+        if v.has_restricted_replica_writer_admin:
+            if not has_admin_users:
+                print("\n具有RESTRICTED_REPLICA_WRITER_ADMIN权限的用户:")
+                has_admin_users = True
+            print(f"  目标端: {k}")
+    if not has_admin_users:
+        print("\n未发现具有RESTRICTED_REPLICA_WRITER_ADMIN权限的用户")
+
+    # 9. 系统变量差异
+    print_section_header("系统变量差异")
+    print_diff_table("系统变量", get_map_diff(src_variable_map, tgt_variable_map))
 
 def dump_seq(args):
     """执行dump-seq子命令"""
