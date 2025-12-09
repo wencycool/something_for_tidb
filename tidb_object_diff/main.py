@@ -164,7 +164,7 @@ def dump_sequences_ddl(src_conn: pymysql.connect, tgt_conn: pymysql.connect = No
                     sequence_map[sequence_name] = f"select setval({sequence_name}, {next_val});"
                 else:
                     drop_sequence_ddl = f"drop sequence if exists {sequence_name};"
-                    create_sequence_ddl = "%screate sequence %s start with %d minvalue %d maxvalue %d increment by %d %s %s comment='%s';" % (
+                    create_sequence_ddl = "%screate sequence if not exists %s start with %d minvalue %d maxvalue %d increment by %d %s %s comment='%s';" % (
                         drop_sequence_ddl if recreate_flag else "",
                         sequence_name,
                         next_val,
